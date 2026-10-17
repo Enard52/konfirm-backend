@@ -4,6 +4,7 @@ import {
   FacilitatorSpendGuardService,
 } from './facilitator-spend-guard.service';
 import { pool } from '../db/pool';
+import { concurrentCalls } from '../../test/helpers/concurrent';
 
 // Real Postgres (konfirm_test, see test/env.ts), no mocks -- same
 // convention as test/admin.e2e-spec.ts. This is plain SQL-backed logic, not
@@ -58,6 +59,19 @@ describe('FacilitatorSpendGuardService', () => {
     expect(status.haltReason).toContain('daily cap exceeded');
     // The rejected attempt itself must never be recorded as spend.
     expect(status.spentTodayUsdc).toBe(60);
+  });
+
+  it('serializes concurrent calls so only spend within the cap is recorded', async () => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
+    const results = await concurrentCalls(2, (index) => guard.checkAndRecordSpend(60, 'sweep', `parallel-${index}`));
+    const status = await guard.status();
+    const logged = await pool.query<{ count: string }>('SELECT COUNT(*) AS count FROM facilitator_spend_log');
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(status.halted).toBe(true);
+    expect(status.spentTodayUsdc).toBe(60);
+    expect(Number(logged.rows[0].count)).toBe(1);
   });
 
   it('stays halted for any further spend, even a small one, until resumed', async () => {
