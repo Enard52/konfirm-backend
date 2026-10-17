@@ -98,7 +98,7 @@ All endpoints are JSON unless noted. Routes marked 🔒 require a valid `konfirm
 |---|---|---|---|
 | `POST` | `/auth/signup` | `email, password, name, stellar_base_address` | Creates the merchant, logs them in immediately |
 | `POST` | `/auth/login` | `email, password` | Same error for wrong email or wrong password — no account enumeration |
-| `POST` | `/auth/logout` | — | Clears the session cookie |
+| `POST` | `/auth/logout` | — | Revokes all of the merchant's sessions (bumps `session_version`) and clears the cookie |
 | `GET` | `/auth/me` 🔒 | — | Current merchant's claims |
 
 ### Links
@@ -129,6 +129,16 @@ All endpoints are JSON unless noted. Routes marked 🔒 require a valid `konfirm
 | `GET` | `/withdrawals/status` 🔒 | `token, id` | Polls the anchor's transaction status |
 | `POST` | `/withdrawals/prepare-payment` 🔒 | `currency, token, id` | Once the anchor is ready (`pending_user_transfer_start`), builds the on-chain payment to the anchor's account for the merchant to sign |
 
+### Fees
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| `GET` | `/fees/owed` 🔒 | — | Owed totals grouped by asset |
+| `GET` | `/fees/settlements` 🔒 | — | Recent settlement status for this merchant |
+| `POST` | `/fees/settlements` 🔒 | optional `amount, asset_code, asset_issuer` | Builds a full or partial unsigned settlement |
+| `POST` | `/fees/settlements/:id/submit` 🔒 | `signed_xdr` | Verifies and submits the merchant-signed transaction |
+| `POST` | `/fees/settlements/:id/dispute` 🔒 | — | Disputes a settlement before signing and releases its claims |
+
 ### Admin
 
 This table lists every route in `src/admin/admin.controller.ts`, and every route there sits behind `AdminGuard`. Routes marked 🔐 require a valid `konfirm_admin_session` cookie — a completely separate identity from a merchant's `konfirm_session` (see [Admin auth](#admin-auth) below).
@@ -136,7 +146,7 @@ This table lists every route in `src/admin/admin.controller.ts`, and every route
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | `POST` | `/admin/auth/login` | `email, password` | Same no-enumeration error as merchant login |
-| `POST` | `/admin/auth/logout` | — | Clears the admin session cookie |
+| `POST` | `/admin/auth/logout` | — | Revokes all of the admin's sessions (bumps `session_version`) and clears the cookie |
 | `GET` | `/admin/auth/me` 🔐 | — | Current admin's claims |
 | `GET` | `/admin/stats` 🔐 | — | Real Postgres aggregates for the Overview dashboard: merchant counts by status, today's payment count/volume, a zero-filled 7-day daily volume series — nothing fabricated for the sake of a fuller-looking chart |
 | `GET` | `/admin/merchants` 🔐 | — | All merchants, newest first (`?limit`, `?offset`) |
@@ -156,6 +166,8 @@ This table lists every route in `src/admin/admin.controller.ts`, and every route
 | `GET` | `/admin/notifications` 🔐 | — | Events derived live from existing rows: x402 settlements, disputed payments, stuck withdrawals, blocks. Nothing is stored separately |
 | `GET` | `/admin/treasury/status` 🔐 | — | Treasury contract state and balances |
 | `GET` | `/admin/fee-revenue/summary` 🔐 | — | Fee revenue totals from confirmed payments |
+| `GET` | `/admin/fees/owed` 🔐 | — | Owed fees, including whether a merchant has disputed settlements |
+| `GET` | `/admin/fees/disputed` 🔐 | — | Disputed settlements awaiting review |
 | `GET` | `/admin/fee-revenue/daily` 🔐 | — | Daily fee revenue series |
 | `GET` | `/admin/users` 🔐 | — | Every payer address, with payment count and volume across all statuses |
 | `GET` | `/admin/wallets` 🔐 | — | Every address in the system with its roles (merchant, payer, blocked), in one directory |
@@ -264,9 +276,16 @@ actually need to be correct. Three layers:
   muxed-address-vs-memo routing bug earlier in this project's life automatically, rather than needing
   a human to notice a wallet crash days later.
 
-What this suite deliberately does **not** cover: actually signing and submitting a transaction (needs
-a real wallet holding a private key — a browser-and-a-human problem, not a CI problem) and the
-SEP-10/24 anchor's interactive popup (same reason). Those stay manually tested.
+The critical-path suite deliberately does **not** cover actually signing and submitting a
+transaction; the live fee-settlement suite does, using a generated merchant keypair against
+testnet. The SEP-10/24 anchor's interactive popup still needs a browser and a human, so that stays
+manually tested.
+
+Use sequential calls when each result intentionally sets up the next assertion. Use a concurrent
+test (see `test/helpers/concurrent.ts`) when correctness depends on check-then-write behavior,
+locking, uniqueness, or a shared limit; sequential calls cannot expose those races.
+`npm run test:fast` is the local/CI Postgres suite, while `npm run test:live` exercises flows that require
+real Stellar testnet and Friendbot availability.
 
 ## Migrations
 

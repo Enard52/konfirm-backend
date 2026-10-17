@@ -27,12 +27,19 @@ const prepareSchema = z.object({
 export class WithdrawalsController {
   constructor(private readonly withdrawals: WithdrawalsService) {}
 
-  @Get('challenge')
-  challenge(@Req() req: AuthedRequest) {
-    if (!req.merchant.stellar_base_address) {
+  // Every endpoint that acts on the merchant's account goes through this, so
+  // none of them can be called directly to get past the missing-address case.
+  private requireStellarAddress(req: AuthedRequest): string {
+    const address = req.merchant.stellar_base_address;
+    if (!address) {
       throw new BadRequestException('no Stellar address on file for this account');
     }
-    return this.withdrawals.getChallenge(req.merchant.stellar_base_address);
+    return address;
+  }
+
+  @Get('challenge')
+  challenge(@Req() req: AuthedRequest) {
+    return this.withdrawals.getChallenge(this.requireStellarAddress(req));
   }
 
   @Post('token')
@@ -42,7 +49,7 @@ export class WithdrawalsController {
 
   @Post('start')
   async start(@Body(new ZodValidationPipe(startSchema)) body: z.infer<typeof startSchema>, @Req() req: AuthedRequest) {
-    const result = await this.withdrawals.startWithdrawal(body.token, body.currency, req.merchant.stellar_base_address!);
+    const result = await this.withdrawals.startWithdrawal(body.token, body.currency, this.requireStellarAddress(req));
     // Best-effort — this is purely an admin-visibility record, and a
     // tracking-insert failure must never block the merchant's actual
     // cash-out, which has already succeeded on the anchor's side by now.
@@ -73,7 +80,8 @@ export class WithdrawalsController {
     @Body(new ZodValidationPipe(prepareSchema)) body: z.infer<typeof prepareSchema>,
     @Req() req: AuthedRequest,
   ) {
+    const address = this.requireStellarAddress(req);
     const txn = await this.withdrawals.getStatus(body.token, body.id);
-    return this.withdrawals.prepareWithdrawalTx(req.merchant.stellar_base_address!, body.currency, txn);
+    return this.withdrawals.prepareWithdrawalTx(address, body.currency, txn);
   }
 }

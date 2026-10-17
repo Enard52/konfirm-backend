@@ -14,6 +14,9 @@ const createLinkSchema = z.object({
   currency: z.enum(['USDC', 'EURC', 'XLM']).optional(),
   description: z.string().max(500).optional(),
   reusable: z.boolean().optional(),
+  // Client-supplied. A retry with the same key returns the original link
+  // instead of creating a second one (scoped per merchant).
+  idempotency_key: z.string().min(1).max(255).optional(),
 });
 
 @Controller('links')

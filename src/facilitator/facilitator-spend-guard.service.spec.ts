@@ -4,6 +4,7 @@ import {
   FacilitatorSpendGuardService,
 } from './facilitator-spend-guard.service';
 import { pool } from '../db/pool';
+import { concurrentCalls } from '../../test/helpers/concurrent';
 
 // Real Postgres (konfirm_test, see test/env.ts), no mocks -- same
 // convention as test/admin.e2e-spec.ts. This is plain SQL-backed logic, not
@@ -74,6 +75,19 @@ describe('FacilitatorSpendGuardService', () => {
     expect(status.spentTodayUsdc).toBe(60);
   });
 
+  it('serializes concurrent calls so only spend within the cap is recorded', async () => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
+    const results = await concurrentCalls(2, (index) => guard.checkAndRecordSpend(60, 'sweep', `parallel-${index}`));
+    const status = await guard.status();
+    const logged = await pool.query<{ count: string }>('SELECT COUNT(*) AS count FROM facilitator_spend_log');
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(status.halted).toBe(true);
+    expect(status.spentTodayUsdc).toBe(60);
+    expect(Number(logged.rows[0].count)).toBe(1);
+  });
+
   it('stays halted for any further spend, even a small one, until resumed', async () => {
     process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
     await guard.checkAndRecordSpend(100, 'sweep', 'tx-1');
@@ -90,7 +104,12 @@ describe('FacilitatorSpendGuardService', () => {
     await expect(guard.checkAndRecordSpend(1, 'sweep', 'tx-2')).rejects.toThrow(FacilitatorSpendCapExceeded);
     await expect(guard.checkAndRecordSpend(1, 'sweep', 'tx-3')).rejects.toThrow(FacilitatorHalted);
 
-    await guard.resume();
+    const cleared = await guard.resume();
+    // The halt details must come back so the admin audit log can keep them.
+    expect(cleared.haltReason).toContain('daily cap exceeded');
+    expect(cleared.haltedAt).not.toBeNull();
+    expect(cleared.capUsdc).toBe(100);
+    expect(cleared.spentTodayUsdc).toBe(100);
     const status = await guard.status();
     expect(status.halted).toBe(false);
 
@@ -99,5 +118,30 @@ describe('FacilitatorSpendGuardService', () => {
     // breach. This is intentional: resuming after a breach doesn't grant a
     // fresh $100 of headroom for the rest of the day.
     await expect(guard.checkAndRecordSpend(1, 'sweep', 'tx-3')).rejects.toThrow(FacilitatorSpendCapExceeded);
+  });
+
+  it('runs every pooled session in UTC, so the daily window is UTC midnight', async () => {
+    const { rows } = await pool.query<{ timezone: string }>('SHOW timezone');
+    expect(rows[0].timezone).toBe('UTC');
+  });
+
+  it("keeps the spend window pinned to UTC even when a session's timezone drifts", async () => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
+    await guard.checkAndRecordSpend(10, 'sweep', 'tx-1');
+    const client = await pool.connect();
+    try {
+      await client.query("SET timezone TO 'Pacific/Kiritimati'");
+      // A fresh pooled connection must still start in UTC.
+      const { rows } = await pool.query<{ timezone: string }>('SHOW timezone');
+      expect(rows[0].timezone).toBe('UTC');
+      const { rows: boundary } = await pool.query<{ utc_midnight: boolean }>(
+        "SELECT date_trunc('day', NOW()) = (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') AS utc_midnight",
+      );
+      expect(boundary[0].utc_midnight).toBe(true);
+    } finally {
+      await client.query("SET timezone TO 'UTC'");
+      client.release();
+    }
+    expect((await guard.status()).spentTodayUsdc).toBe(10);
   });
 });

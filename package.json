@@ -60,5 +60,6 @@
   },
   "overrides": {
     "@stellar/stellar-sdk": "17.2.1"
-  }
+  },
+  "_comment_stellar_sdk_override": "@x402/stellar depends on @stellar/stellar-sdk@^16.3.0 (an older major version). This override forces a single copy in the tree at 17.2.1, the version the app is tested against, preventing duplicate incompatible SDK instances that would cause instanceof failures at runtime."
 }

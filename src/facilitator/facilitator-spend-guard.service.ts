@@ -56,10 +56,21 @@ export class FacilitatorSpendGuardService {
       if (halted) {
         throw new FacilitatorHalted(
           `facilitator signing is halted (since ${halted.value}) pending manual review -- ` +
+    try {
+      await client.query('BEGIN');
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('facilitator-spend-guard'))");
+      const halted = await client.query<{ value: string }>('SELECT value FROM facilitator_state WHERE key = $1', [HALT_KEY]);
+      if (halted.rows[0]) {
+        await client.query('ROLLBACK');
+        throw new FacilitatorHalted(
+          `facilitator signing is halted (since ${halted.rows[0].value}) pending manual review -- ` +
             'see GET /admin/facilitator/status, resume via POST /admin/facilitator/resume',
         );
       }
 
+      const spendResult = await client.query<{ total: string }>(
+        `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
+      );
       const spentToday = Number(spendResult.rows[0].total);
       const cap = dailyCapUsdc();
       if (spentToday + amountUsdc > cap) {
@@ -70,6 +81,11 @@ export class FacilitatorSpendGuardService {
         );
         await client.query('COMMIT');
         transactionOpen = false;
+          `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
+            `with $${spentToday} already spent today against a $${cap} cap`,
+          client,
+        );
+        await client.query('COMMIT');
         throw new FacilitatorSpendCapExceeded(
           `signing this $${amountUsdc} ${operation} would exceed the daily cap of $${cap} ` +
             `($${spentToday} already spent today) -- halting further signing pending manual review`,
@@ -125,7 +141,24 @@ export class FacilitatorSpendGuardService {
 
   /** Explicit admin action only -- see the module comment for why this
    * never clears itself. */
-  async resume(): Promise<void> {
-    await pool.query('DELETE FROM facilitator_state WHERE key IN ($1, $2)', [HALT_KEY, HALT_REASON_KEY]);
+  async resume(): Promise<{ haltedAt: string | null; haltReason: string | null; capUsdc: number; spentTodayUsdc: number }> {
+    // RETURNING captures exactly what this DELETE cleared, so the caller can
+    // put it in the audit log -- otherwise the halt reason is gone for good.
+    const [cleared, spend] = await Promise.all([
+      pool.query<{ key: string; value: string }>(
+        'DELETE FROM facilitator_state WHERE key IN ($1, $2) RETURNING key, value',
+        [HALT_KEY, HALT_REASON_KEY],
+      ),
+      pool.query<{ total: string }>(
+        `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
+      ),
+    ]);
+    const byKey = new Map(cleared.rows.map((r) => [r.key, r.value]));
+    return {
+      haltedAt: byKey.get(HALT_KEY) ?? null,
+      haltReason: byKey.get(HALT_REASON_KEY) ?? null,
+      capUsdc: dailyCapUsdc(),
+      spentTodayUsdc: Number(spend.rows[0].total),
+    };
   }
 }

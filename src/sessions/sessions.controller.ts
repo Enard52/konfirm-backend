@@ -14,6 +14,11 @@ const reserveSchema = z.object({
 export class SessionsController {
   constructor(private readonly sessions: SessionsService) {}
 
+  // Unauthenticated public write — tighter than the global default (60/min)
+  // to match the pattern for other public state-changing routes in this
+  // codebase. Each call inserts a link_sessions row, so an unlimited rate
+  // from a known linkId (pay links are public) is an easy DB-write amplifier.
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post()
   reserve(
     @Param('linkId') linkId: string,

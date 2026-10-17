@@ -9,14 +9,16 @@ export interface CreateLinkInput {
   currency?: string;
   description?: string;
   reusable?: boolean;
+  idempotency_key?: string;
 }
 
 @Injectable()
 export class LinksService {
   async create(input: CreateLinkInput) {
     const { rows } = await pool.query(
-      `INSERT INTO links (merchant_id, amount_usdc, currency, description, reusable)
-       VALUES ($1, $2, COALESCE($3, 'USDC'), $4, COALESCE($5, true))
+      `INSERT INTO links (merchant_id, amount_usdc, currency, description, reusable, idempotency_key)
+       VALUES ($1, $2, COALESCE($3, 'USDC'), $4, COALESCE($5, true), $6)
+       ON CONFLICT (merchant_id, idempotency_key) DO NOTHING
        RETURNING id, merchant_id, amount_usdc, currency, description, reusable, active, created_at`,
       [
         input.merchant_id,
@@ -24,9 +26,19 @@ export class LinksService {
         input.currency ?? null,
         input.description ?? null,
         input.reusable ?? null,
+        input.idempotency_key ?? null,
       ],
     );
-    return rows[0];
+    if (rows.length > 0) return rows[0];
+
+    // The key was already used by this merchant: return the original link
+    // rather than a second one.
+    const existing = await pool.query(
+      `SELECT id, merchant_id, amount_usdc, currency, description, reusable, active, created_at
+       FROM links WHERE merchant_id = $1 AND idempotency_key = $2`,
+      [input.merchant_id, input.idempotency_key],
+    );
+    return existing.rows[0];
   }
 
   // The narrow public projection a checkout page is allowed to see — no

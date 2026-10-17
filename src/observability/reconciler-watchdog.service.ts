@@ -17,7 +17,7 @@ export class ReconcilerWatchdogService {
   private readonly logger = new Logger(ReconcilerWatchdogService.name);
 
   @Cron('*/2 * * * *')
-  async check(): Promise<{ stalled: boolean; ageMinutes: number | null }> {
+  async check(): Promise<{ stalled: boolean; ageMinutes: number | null; spendGuardHalted: boolean; failedFeeSettlements: number }> {
     const { rows } = await pool.query(
       `SELECT
          (SELECT COUNT(*)::int FROM merchants WHERE status = 'active' AND stellar_base_address IS NOT NULL) AS active_merchants,
@@ -26,15 +26,25 @@ export class ReconcilerWatchdogService {
     const activeMerchants: number = rows[0].active_merchants;
     const ageMinutes: number | null = rows[0].age_minutes === null ? null : Number(rows[0].age_minutes);
 
-    if (activeMerchants === 0 || ageMinutes === null) {
-      return { stalled: false, ageMinutes };
-    }
-    const stalled = ageMinutes > RECONCILER_STALL_MINUTES;
+    const stalled = activeMerchants > 0 && ageMinutes !== null && ageMinutes > RECONCILER_STALL_MINUTES;
     if (stalled) {
       this.logger.error(
         `reconciler looks stalled: cursor last moved ${ageMinutes.toFixed(1)} min ago with ${activeMerchants} active merchant(s) — payments may not be showing up (see docs/RUNBOOK.md §4)`,
       );
     }
-    return { stalled, ageMinutes };
+
+    const [halt, failures] = await Promise.all([
+      pool.query(`SELECT 1 FROM facilitator_state WHERE key = 'halted_at' LIMIT 1`),
+      pool.query(`SELECT COUNT(*)::int AS count FROM fee_settlements WHERE status = 'pending' AND submission_error IS NOT NULL`),
+    ]);
+    const spendGuardHalted = halt.rows.length > 0;
+    const failedFeeSettlements: number = failures.rows[0].count;
+    if (spendGuardHalted) {
+      this.logger.error('facilitator spend guard is halted; facilitator signing requires manual review (see docs/KEYS.md)');
+    }
+    if (failedFeeSettlements > 0) {
+      this.logger.error(`fee settlement submission failures: ${failedFeeSettlements} pending settlement(s) were rejected by Horizon`);
+    }
+    return { stalled, ageMinutes, spendGuardHalted, failedFeeSettlements };
   }
 }
