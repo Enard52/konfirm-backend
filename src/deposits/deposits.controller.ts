@@ -32,6 +32,7 @@ export class DepositsController {
   @Get('challenge')
   challenge(@Query('account') account: string) {
     if (!account) throw new BadRequestException('account is required');
+    if (!/^G[A-Z2-7]{55}$/.test(account)) throw new BadRequestException('account must be a valid Stellar address');
     return this.deposits.getChallenge(account);
   }
 
