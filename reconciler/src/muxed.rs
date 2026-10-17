@@ -37,6 +37,17 @@ mod test {
     }
 
     #[test]
+    fn round_trips_boundary_muxed_ids() {
+        for id in [0u64, u64::MAX] {
+            let muxed = MuxedAccount { ed25519: [3u8; 32], id };
+            let encoded = muxed.to_string();
+            assert_eq!(decode_muxed_id(&encoded), Some(id));
+            assert_eq!(payment_muxed_id(None, Some(encoded.as_str()), "GARBAGE"), Some(id));
+        }
+        assert_eq!(payment_muxed_id(Some("18446744073709551615"), None, "GARBAGE"), Some(u64::MAX));
+    }
+
+    #[test]
     fn prefers_explicit_to_muxed_id_field() {
         let muxed = MuxedAccount { ed25519: [1u8; 32], id: 99 };
         let encoded = muxed.to_string();
