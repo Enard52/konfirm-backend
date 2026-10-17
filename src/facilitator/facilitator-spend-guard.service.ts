@@ -112,7 +112,24 @@ export class FacilitatorSpendGuardService {
 
   /** Explicit admin action only -- see the module comment for why this
    * never clears itself. */
-  async resume(): Promise<void> {
-    await pool.query('DELETE FROM facilitator_state WHERE key IN ($1, $2)', [HALT_KEY, HALT_REASON_KEY]);
+  async resume(): Promise<{ haltedAt: string | null; haltReason: string | null; capUsdc: number; spentTodayUsdc: number }> {
+    // RETURNING captures exactly what this DELETE cleared, so the caller can
+    // put it in the audit log -- otherwise the halt reason is gone for good.
+    const [cleared, spend] = await Promise.all([
+      pool.query<{ key: string; value: string }>(
+        'DELETE FROM facilitator_state WHERE key IN ($1, $2) RETURNING key, value',
+        [HALT_KEY, HALT_REASON_KEY],
+      ),
+      pool.query<{ total: string }>(
+        `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
+      ),
+    ]);
+    const byKey = new Map(cleared.rows.map((r) => [r.key, r.value]));
+    return {
+      haltedAt: byKey.get(HALT_KEY) ?? null,
+      haltReason: byKey.get(HALT_REASON_KEY) ?? null,
+      capUsdc: dailyCapUsdc(),
+      spentTodayUsdc: Number(spend.rows[0].total),
+    };
   }
 }

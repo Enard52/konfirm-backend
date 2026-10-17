@@ -25,11 +25,16 @@ export class AdminPaymentsService {
   }
 
   async setStatus(id: string, status: 'paid' | 'held' | 'disputed') {
+    // Same pre-update-snapshot pattern as AdminMerchantsService.setTier.
     const { rows } = await pool.query(
-      `UPDATE payments SET status = $2 WHERE id = $1 RETURNING id, status`,
+      `UPDATE payments p SET status = $2
+       FROM (SELECT id, status FROM payments WHERE id = $1 FOR UPDATE) old
+       WHERE p.id = old.id
+       RETURNING p.id, p.status, old.status AS previous_status`,
       [id, status],
     );
     if (rows.length === 0) throw new NotFoundException('payment not found');
-    return rows[0];
+    const { previous_status: previous, ...payment } = rows[0];
+    return { payment, previous: previous as string };
   }
 }

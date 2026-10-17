@@ -136,9 +136,10 @@ export class AdminController {
     @Body(new ZodValidationPipe(setMerchantTierSchema)) body: z.infer<typeof setMerchantTierSchema>,
     @Req() req: AuthedAdminRequest,
   ) {
-    const merchant = await this.merchants.setTier(id, body.risk_tier);
+    const { merchant, previous } = await this.merchants.setTier(id, body.risk_tier);
     await this.actions.log(req.admin.id, 'merchant.set-tier', 'merchant', id, {
-      risk_tier: body.risk_tier,
+      previous,
+      new: body.risk_tier,
       reason: body.reason,
     });
     return merchant;
@@ -157,8 +158,12 @@ export class AdminController {
     @Body(new ZodValidationPipe(setPaymentStatusSchema)) body: z.infer<typeof setPaymentStatusSchema>,
     @Req() req: AuthedAdminRequest,
   ) {
-    const payment = await this.payments.setStatus(id, body.status);
-    await this.actions.log(req.admin.id, `payment.set-status.${body.status}`, 'payment', id, { reason: body.reason });
+    const { payment, previous } = await this.payments.setStatus(id, body.status);
+    await this.actions.log(req.admin.id, `payment.set-status.${body.status}`, 'payment', id, {
+      previous,
+      new: body.status,
+      reason: body.reason,
+    });
     return payment;
   }
 
@@ -329,8 +334,8 @@ export class AdminController {
 
   @Post('facilitator/resume')
   async resumeFacilitator(@Req() req: AuthedAdminRequest) {
-    await this.facilitatorSpendGuard.resume();
-    await this.actions.log(req.admin.id, 'facilitator.resume', 'facilitator', 'spend-guard');
+    const cleared = await this.facilitatorSpendGuard.resume();
+    await this.actions.log(req.admin.id, 'facilitator.resume', 'facilitator', 'spend-guard', cleared);
     return { ok: true };
   }
 

@@ -44,13 +44,17 @@ export class AdminMerchantsService {
   // capability; this only lets an admin manually set which tier a merchant
   // is treated as, the same way status changes are manual today.
   async setTier(id: string, riskTier: 'unverified' | 'standard' | 'established' | 'enterprise') {
+    // The FROM subquery reads the pre-update row (locked FOR UPDATE), so the
+    // previous tier comes back from the same statement for the audit log.
     const { rows } = await pool.query(
-      `UPDATE merchants SET risk_tier = $2, updated_at = NOW()
-       WHERE id = $1
-       RETURNING id, email, name, risk_tier`,
+      `UPDATE merchants m SET risk_tier = $2, updated_at = NOW()
+       FROM (SELECT id, risk_tier FROM merchants WHERE id = $1 FOR UPDATE) old
+       WHERE m.id = old.id
+       RETURNING m.id, m.email, m.name, m.risk_tier, old.risk_tier AS previous_risk_tier`,
       [id, riskTier],
     );
     if (rows.length === 0) throw new NotFoundException('merchant not found');
-    return rows[0];
+    const { previous_risk_tier: previous, ...merchant } = rows[0];
+    return { merchant, previous: previous as string };
   }
 }

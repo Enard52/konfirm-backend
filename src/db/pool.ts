@@ -24,4 +24,9 @@ export const pool = new Pool({
   max: envInt('DB_POOL_MAX', 10),
   idleTimeoutMillis: envInt('DB_POOL_IDLE_TIMEOUT_MS', 10_000),
   connectionTimeoutMillis: envInt('DB_POOL_CONNECTION_TIMEOUT_MS', 0),
+  // Pin every session to UTC rather than inheriting whatever the server/
+  // role default happens to be — date_trunc('day', NOW()) (facilitator
+  // spend cap, admin stats, fee revenue) truncates in the session timezone,
+  // so an inherited non-UTC default would silently move the daily reset.
+  options: '-c timezone=UTC',
 });
