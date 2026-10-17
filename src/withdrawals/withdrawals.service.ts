@@ -3,6 +3,7 @@ import { BASE_FEE, Memo, Operation, TransactionBuilder, Horizon } from '@stellar
 import { resolveAsset } from '../common/asset';
 import { withRetry } from '../common/retry';
 import { AnchorClient } from '../common/anchor-client';
+import { startInteractiveOnce } from '../common/anchor-start-dedup';
 import { ANCHOR_AUTH_URL, ANCHOR_TRANSFER_SERVER, HORIZON_URL, NETWORK_PASSPHRASE } from '../common/stellar-network';
 
 interface WithdrawTransaction {
@@ -46,8 +47,12 @@ export class WithdrawalsService {
   // toggle deliberately stays XLM/USDC-only rather than offering a EURC
   // option that would fail at the anchor, not because of a gap on this
   // side.
+  // Deduped: a client retry of the same start returns the session already
+  // minted rather than opening a second cash-out on the anchor.
   startWithdrawal(token: string, currency: string, account: string) {
-    return this.anchor.startInteractive('withdraw', token, currency, account);
+    return startInteractiveOnce('withdraw', account, currency, token, () =>
+      this.anchor.startInteractive('withdraw', token, currency, account),
+    );
   }
 
   getStatus(token: string, id: string): Promise<WithdrawTransaction> {

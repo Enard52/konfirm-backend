@@ -3,6 +3,7 @@ import { BASE_FEE, Horizon, Operation, TransactionBuilder } from '@stellar/stell
 import { resolveAsset } from '../common/asset';
 import { withRetry } from '../common/retry';
 import { AnchorClient } from '../common/anchor-client';
+import { startInteractiveOnce } from '../common/anchor-start-dedup';
 import { ANCHOR_AUTH_URL, ANCHOR_TRANSFER_SERVER, HORIZON_URL, NETWORK_PASSPHRASE } from '../common/stellar-network';
 
 // Same reference anchor as withdrawals.service.ts (see AnchorClient for the
@@ -35,8 +36,11 @@ export class DepositsService {
     return this.anchor.exchangeToken(signedTransaction);
   }
 
+  // Deduped, same as WithdrawalsService.startWithdrawal.
   startDeposit(token: string, currency: string, account: string) {
-    return this.anchor.startInteractive('deposit', token, currency, account);
+    return startInteractiveOnce('deposit', account, currency, token, () =>
+      this.anchor.startInteractive('deposit', token, currency, account),
+    );
   }
 
   getStatus(token: string, id: string) {
