@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Asset, BASE_FEE, Horizon, Memo, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
-import type { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 import { platformFeeAddress } from '../common/platform-fee';
 import { HORIZON_URL, NETWORK_PASSPHRASE } from '../common/stellar-network';
@@ -196,9 +195,29 @@ export class FeesService {
     return { ok: true, settlement_id: settlementId, tx_hash: s.tx_hash };
   }
 
-  private async confirm(settlementId: string, client: { query: PoolClient['query'] } = pool) {
-    await client.query(`UPDATE fee_settlements SET status = 'confirmed', confirmed_at = NOW() WHERE id = $1 AND status = 'pending'`, [settlementId]);
-    await client.query(`UPDATE payments SET fee_status = 'settled' WHERE fee_settlement_id = $1`, [settlementId]);
+  private async confirm(settlementId: string) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rowCount } = await client.query(
+        `UPDATE fee_settlements SET status = 'confirmed', confirmed_at = NOW()
+         WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [settlementId],
+      );
+      if (rowCount) {
+        await client.query(
+          `UPDATE payments SET fee_status = 'settled'
+           WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`,
+          [settlementId],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   // Runs on a schedule. A settlement the merchant signed and submitted outside
@@ -234,8 +253,18 @@ export class FeesService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`UPDATE payments SET fee_status = 'owed', fee_settlement_id = NULL WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`, [settlementId]);
-      await client.query(`UPDATE fee_settlements SET status = 'expired' WHERE id = $1 AND status = 'pending'`, [settlementId]);
+      const { rowCount } = await client.query(
+        `UPDATE fee_settlements SET status = 'expired'
+         WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [settlementId],
+      );
+      if (rowCount) {
+        await client.query(
+          `UPDATE payments SET fee_status = 'owed', fee_settlement_id = NULL
+           WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`,
+          [settlementId],
+        );
+      }
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);

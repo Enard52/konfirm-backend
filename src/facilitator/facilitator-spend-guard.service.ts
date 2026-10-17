@@ -1,8 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 
 const HALT_KEY = 'halted_at';
 const HALT_REASON_KEY = 'halt_reason';
+const SPEND_GUARD_LOCK_KEY = 402_005;
 
 // A tunable ceiling, not a hardcoded guess -- how much daily exposure is
 // acceptable is an operational/business call, not something to bake into
@@ -37,56 +39,67 @@ export class FacilitatorSpendGuardService {
   private readonly logger = new Logger(FacilitatorSpendGuardService.name);
 
   async checkAndRecordSpend(amountUsdc: number, operation: string, reference?: string): Promise<void> {
-    let halted: { value: string } | undefined;
-    let spentTodayRow: { total: string };
+    const client = await pool.connect();
+    let transactionOpen = false;
     try {
+      await client.query('BEGIN');
+      transactionOpen = true;
+      await client.query('SELECT pg_advisory_xact_lock($1)', [SPEND_GUARD_LOCK_KEY]);
+
       const [haltResult, spendResult] = await Promise.all([
-        pool.query<{ value: string }>('SELECT value FROM facilitator_state WHERE key = $1', [HALT_KEY]),
-        pool.query<{ total: string }>(
+        client.query<{ value: string }>('SELECT value FROM facilitator_state WHERE key = $1', [HALT_KEY]),
+        client.query<{ total: string }>(
           `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
         ),
       ]);
-      halted = haltResult.rows[0];
-      spentTodayRow = spendResult.rows[0];
+      const halted = haltResult.rows[0];
+      if (halted) {
+        throw new FacilitatorHalted(
+          `facilitator signing is halted (since ${halted.value}) pending manual review -- ` +
+            'see GET /admin/facilitator/status, resume via POST /admin/facilitator/resume',
+        );
+      }
+
+      const spentToday = Number(spendResult.rows[0].total);
+      const cap = dailyCapUsdc();
+      if (spentToday + amountUsdc > cap) {
+        await this.halt(
+          client,
+          `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
+            `with $${spentToday} already spent today against a $${cap} cap`,
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
+        throw new FacilitatorSpendCapExceeded(
+          `signing this $${amountUsdc} ${operation} would exceed the daily cap of $${cap} ` +
+            `($${spentToday} already spent today) -- halting further signing pending manual review`,
+        );
+      }
+
+      await client.query('INSERT INTO facilitator_spend_log (amount_usdc, operation, reference) VALUES ($1, $2, $3)', [
+        amountUsdc,
+        operation,
+        reference ?? null,
+      ]);
+      await client.query('COMMIT');
+      transactionOpen = false;
     } catch (err) {
-      throw new Error(`facilitator spend guard: could not read spend state, refusing to sign (fail closed): ${err}`);
+      if (transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
+      if (err instanceof FacilitatorHalted || err instanceof FacilitatorSpendCapExceeded) throw err;
+      throw new Error(`facilitator spend guard: could not read or record spend state, refusing to sign (fail closed): ${err}`);
+    } finally {
+      client.release();
     }
-
-    if (halted) {
-      throw new FacilitatorHalted(
-        `facilitator signing is halted (since ${halted.value}) pending manual review -- ` +
-          'see GET /admin/facilitator/status, resume via POST /admin/facilitator/resume',
-      );
-    }
-
-    const spentToday = Number(spentTodayRow.total);
-    const cap = dailyCapUsdc();
-    if (spentToday + amountUsdc > cap) {
-      await this.halt(
-        `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
-          `with $${spentToday} already spent today against a $${cap} cap`,
-      );
-      throw new FacilitatorSpendCapExceeded(
-        `signing this $${amountUsdc} ${operation} would exceed the daily cap of $${cap} ` +
-          `($${spentToday} already spent today) -- halting further signing pending manual review`,
-      );
-    }
-
-    await pool.query('INSERT INTO facilitator_spend_log (amount_usdc, operation, reference) VALUES ($1, $2, $3)', [
-      amountUsdc,
-      operation,
-      reference ?? null,
-    ]);
   }
 
-  private async halt(reason: string): Promise<void> {
+  private async halt(client: PoolClient, reason: string): Promise<void> {
     this.logger.error(`HALTING facilitator signing: ${reason}`);
-    await pool.query(
+    await client.query(
       `INSERT INTO facilitator_state (key, value) VALUES ($1, NOW()::text)
        ON CONFLICT (key) DO UPDATE SET value = NOW()::text, updated_at = NOW()`,
       [HALT_KEY],
     );
-    await pool.query(
+    await client.query(
       `INSERT INTO facilitator_state (key, value) VALUES ($1, $2)
        ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()`,
       [HALT_REASON_KEY, reason],

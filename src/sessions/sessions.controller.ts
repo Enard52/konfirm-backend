@@ -2,10 +2,12 @@ import { BadRequestException, Body, Controller, Get, Param, Post } from '@nestjs
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
+import { nonNegativeIntegerStringSchema, POSTGRES_BIGINT_MAX } from '../common/numeric-validation';
 import { SessionsService } from './sessions.service';
 
+const muxedIdSchema = nonNegativeIntegerStringSchema(POSTGRES_BIGINT_MAX, 'muxed_id');
 const reserveSchema = z.object({
-  muxed_id: z.string().regex(/^\d+$/, 'must be a stringified u64'),
+  muxed_id: muxedIdSchema,
 });
 
 @Controller('links/:linkId/sessions')
@@ -27,7 +29,9 @@ export class SessionsController {
   @Get(':muxedId')
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
   status(@Param('linkId') linkId: string, @Param('muxedId') muxedId: string) {
-    if (!/^\d+$/.test(muxedId)) throw new BadRequestException('muxedId must be a stringified u64');
+    if (!muxedIdSchema.safeParse(muxedId).success) {
+      throw new BadRequestException('muxedId must fit in a non-negative signed 64-bit integer');
+    }
     return this.sessions.statusFor(linkId, muxedId);
   }
 }

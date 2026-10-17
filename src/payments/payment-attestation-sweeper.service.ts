@@ -4,12 +4,13 @@ import { pool } from '../db/pool';
 import { PaymentAttestationService } from './payment-attestation.service';
 
 // Arbitrary but stable pg_advisory_lock key -- namespaced away from
-// ChannelKeeperService's KEEPER_LOCK_KEY (402_001) and
-// FacilitatorSweepService's SWEEP_LOCK_KEY (402_002). Same
+// ChannelKeeperService's KEEPER_LOCK_KEY (402_001),
+// FacilitatorSweepService's SWEEP_LOCK_KEY (402_002), and
+// FeeCollectionSweepService's SWEEP_LOCK_KEY (402_003). Same
 // double-sweep-across-replicas guard already proven safe for the channel
 // keeper (two independent pg.Pool instances, two concurrent sweep() calls,
 // exactly one real on-chain checkpoint landed).
-const ATTESTATION_LOCK_KEY = 402_003;
+const ATTESTATION_LOCK_KEY = 402_004;
 const BATCH_SIZE = 20;
 
 interface AttestationDueRow {
@@ -93,7 +94,7 @@ export class PaymentAttestationSweeperService {
         }
 
         await pool.query(
-          `UPDATE payments SET onchain_payment_id = $2, attested_at = NOW() WHERE id = $1`,
+          `UPDATE payments SET onchain_payment_id = $2, attested_at = NOW() WHERE id = $1 AND attested_at IS NULL`,
           [row.id, result.onchainPaymentId],
         );
       } catch (err) {

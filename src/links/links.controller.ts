@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/comm
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { AuthedRequest, AuthGuard } from '../auth/auth.guard';
+import { nonNegativeDecimalStringSchema } from '../common/numeric-validation';
 import { LinksService } from './links.service';
 
 // merchant_id is deliberately absent from this schema — it used to be a
@@ -9,10 +10,7 @@ import { LinksService } from './links.service';
 // could create a Link against someone else's account. It now comes only
 // from the authenticated session (req.merchant.id).
 const createLinkSchema = z.object({
-  amount_usdc: z
-    .string()
-    .regex(/^\d+(\.\d{1,7})?$/, 'must be a plain decimal string, 7dp max')
-    .optional(),
+  amount_usdc: nonNegativeDecimalStringSchema('amount_usdc', 7, 999_999_999_999_999_999n).optional(),
   currency: z.enum(['USDC', 'EURC', 'XLM']).optional(),
   description: z.string().max(500).optional(),
   reusable: z.boolean().optional(),

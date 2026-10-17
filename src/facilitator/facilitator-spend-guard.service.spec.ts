@@ -49,6 +49,20 @@ describe('FacilitatorSpendGuardService', () => {
     expect(status.halted).toBe(false);
   });
 
+  it('serializes concurrent checks so they cannot jointly exceed the cap', async () => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
+    const results = await Promise.allSettled([
+      guard.checkAndRecordSpend(60, 'sweep', 'race-a'),
+      guard.checkAndRecordSpend(60, 'sweep', 'race-b'),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const status = await guard.status();
+    expect(status.spentTodayUsdc).toBe(60);
+    expect(status.halted).toBe(true);
+  });
+
   it('halts on a cap breach and rejects the over-cap operation', async () => {
     process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100';
     await guard.checkAndRecordSpend(60, 'sweep', 'tx-1');
