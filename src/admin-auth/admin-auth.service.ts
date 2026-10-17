@@ -17,6 +17,7 @@ export interface AdminClaims {
   id: string;
   email: string;
   name: string;
+  sv?: number;
 }
 
 @Injectable()
@@ -25,7 +26,7 @@ export class AdminAuthService {
 
   async login(email: string, password: string): Promise<{ token: string; admin: AdminClaims }> {
     // Matched case-insensitively: admin rows aren't constrained to lowercase.
-    const { rows } = await pool.query('SELECT id, email, name, password_hash FROM admins WHERE lower(email) = $1', [
+    const { rows } = await pool.query('SELECT id, email, name, password_hash, session_version FROM admins WHERE lower(email) = $1', [
       email.trim().toLowerCase(),
     ]);
     // Same generic error whether the email doesn't exist or the password is
@@ -38,7 +39,7 @@ export class AdminAuthService {
     if (!ok) throw invalid();
 
     const admin: AdminClaims = { id: row.id, email: row.email, name: row.name };
-    return { token: this.issueToken(admin), admin };
+    return { token: this.issueToken(admin, row.session_version), admin };
   }
 
   verifyToken(token: string): AdminClaims {
@@ -49,7 +50,22 @@ export class AdminAuthService {
     }
   }
 
-  private issueToken(admin: AdminClaims): string {
-    return jwt.sign({ id: admin.id, email: admin.email, name: admin.name }, ADMIN_JWT_SECRET, { expiresIn: TOKEN_TTL });
+  // Bumps session_version so the token being logged out, and any copy of it,
+  // stops passing AdminGuard. A missing or already-invalid token is a no-op.
+  async logout(token: string | undefined): Promise<void> {
+    if (!token) return;
+    let claims: AdminClaims;
+    try {
+      claims = this.verifyToken(token);
+    } catch {
+      return;
+    }
+    await pool.query('UPDATE admins SET session_version = session_version + 1 WHERE id = $1', [claims.id]);
+  }
+
+  private issueToken(admin: AdminClaims, sessionVersion: number): string {
+    return jwt.sign({ id: admin.id, email: admin.email, name: admin.name, sv: sessionVersion }, ADMIN_JWT_SECRET, {
+      expiresIn: TOKEN_TTL,
+    });
   }
 }

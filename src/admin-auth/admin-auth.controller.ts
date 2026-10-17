@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { AdminAuthService } from './admin-auth.service';
@@ -35,9 +35,11 @@ export class AdminAuthController {
     return { admin };
   }
 
+  // Revokes server-side as well as clearing the cookie — see auth.controller.ts.
   @Post('logout')
   @HttpCode(200)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    await this.adminAuth.logout(req.cookies?.[ADMIN_SESSION_COOKIE]);
     res.clearCookie(ADMIN_SESSION_COOKIE);
     return { ok: true };
   }

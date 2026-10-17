@@ -98,7 +98,7 @@ All endpoints are JSON unless noted. Routes marked 🔒 require a valid `konfirm
 |---|---|---|---|
 | `POST` | `/auth/signup` | `email, password, name, stellar_base_address` | Creates the merchant, logs them in immediately |
 | `POST` | `/auth/login` | `email, password` | Same error for wrong email or wrong password — no account enumeration |
-| `POST` | `/auth/logout` | — | Clears the session cookie |
+| `POST` | `/auth/logout` | — | Revokes all of the merchant's sessions (bumps `session_version`) and clears the cookie |
 | `GET` | `/auth/me` 🔒 | — | Current merchant's claims |
 
 ### Links
@@ -136,7 +136,7 @@ This table lists every route in `src/admin/admin.controller.ts`, and every route
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | `POST` | `/admin/auth/login` | `email, password` | Same no-enumeration error as merchant login |
-| `POST` | `/admin/auth/logout` | — | Clears the admin session cookie |
+| `POST` | `/admin/auth/logout` | — | Revokes all of the admin's sessions (bumps `session_version`) and clears the cookie |
 | `GET` | `/admin/auth/me` 🔐 | — | Current admin's claims |
 | `GET` | `/admin/stats` 🔐 | — | Real Postgres aggregates for the Overview dashboard: merchant counts by status, today's payment count/volume, a zero-filled 7-day daily volume series — nothing fabricated for the sake of a fuller-looking chart |
 | `GET` | `/admin/merchants` 🔐 | — | All merchants, newest first (`?limit`, `?offset`) |

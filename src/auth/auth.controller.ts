@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, Logger, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { AuthService } from './auth.service';
@@ -112,9 +112,12 @@ export class AuthController {
     return { ok: true };
   }
 
+  // Revokes server-side as well as clearing the cookie: a copy of the token
+  // taken before logout must stop working, not just be forgotten by the browser.
   @Post('logout')
   @HttpCode(200)
-  logout(@Res({ passthrough: true }) res: Response) {
+  async logout(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    await this.auth.logout(req.cookies?.[SESSION_COOKIE]);
     res.clearCookie(SESSION_COOKIE);
     return { ok: true };
   }
