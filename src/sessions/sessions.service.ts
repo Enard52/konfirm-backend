@@ -28,10 +28,12 @@ export class SessionsService {
     };
   }
 
-  // This is the one server round trip §1 says is unavoidable — compliance
-  // screening has to happen here in the real build. What it does today:
-  // reserve the client-derived muxed_id against this Link, so the reconciler
-  // can resolve link_id later without a second endpoint ever existing.
+  // Reserves the client-derived muxed_id against this Link, so the reconciler
+  // can resolve link_id later without a second endpoint ever existing. This
+  // performs NO compliance screening. Payer screening currently happens in
+  // PaymentsService.isPayerAllowed() during prepareTx, before any XDR is built.
+  // TODO: the §1 design expects screening at this server round trip in the
+  // real build; move or duplicate the check here once that design is settled.
   async reserve(linkId: string, muxedId: string) {
     const link = await pool.query(
       `SELECT id, merchant_id, active FROM links WHERE id = $1`,
