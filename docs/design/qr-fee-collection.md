@@ -37,8 +37,8 @@ Freighter checkout already has this property (the payer is known, and the transa
 
 - Payers pay the link amount exactly, so QR and every mobile wallet work for every link.
 - The reconciler records each QR payment's fee as owed (`fee_status = 'owed'`), with the fee computed from the merchant's effective rate at payment time. Payments that did include the fee leg stay `collected`.
-- The merchant clears owed fees from the dashboard. The backend builds one transaction, paying the owed total per asset from the merchant's own account to the fee account. The merchant signs it in Freighter. Konfirm never holds the merchant's key, so this stays non-custodial.
-- The backend confirms the settlement on Horizon by hash, checks the amounts, and marks those payments `collected`.
+- The merchant clears all or part of owed fees from the dashboard. The backend builds one transaction, paying the selected amount per asset from the merchant's own account to the fee account. The merchant signs it in Freighter. Konfirm never holds the merchant's key, so this stays non-custodial.
+- The backend confirms the settlement on Horizon by hash and subtracts only its recorded allocations from the owed balances; any remainder stays owed.
 - Enforcement is visible but not automatic: owed fees appear on the dashboard and the admin page, and an admin can suspend an account that stays in arrears. An automatic cash-out block is a possible later step.
 - Trade-off: a merchant who never settles keeps the fee owed. Enforcement depends on that visibility and on suspension, not on the payment itself.
 
