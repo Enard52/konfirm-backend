@@ -57,6 +57,40 @@ describe('admin workflow: suspend/reactivate a merchant (e2e)', () => {
     adminCookie = rawCookie.split(';')[0];
   });
 
+  it('GET /admin/auth/me returns the current admin with a valid session', async () => {
+    const res = await request(app.getHttpServer()).get('/admin/auth/me').set('Cookie', adminCookie).expect(200);
+    expect(res.body.admin).toBeDefined();
+    expect(res.body.admin.email).toBe(adminEmail);
+    expect(res.body.admin.name).toBe('E2E Admin');
+    expect(res.body.admin.id).toEqual(expect.any(String));
+  });
+
+  it('GET /admin/auth/me rejects without a valid session', async () => {
+    await request(app.getHttpServer()).get('/admin/auth/me').expect(401);
+  });
+
+  it('POST /admin/auth/logout clears the session cookie and invalidates the token', async () => {
+    // Logout
+    const logoutRes = await request(app.getHttpServer())
+      .post('/admin/auth/logout')
+      .set('Cookie', adminCookie)
+      .expect(200);
+    expect(logoutRes.body.ok).toBe(true);
+
+    // The cookie should be cleared (Set-Cookie header with max-age=0 or similar)
+    const setCookieHeader = logoutRes.headers['set-cookie'];
+    expect(setCookieHeader).toBeDefined();
+
+    // Attempting to use the old cookie should now fail
+    await request(app.getHttpServer()).get('/admin/auth/me').set('Cookie', adminCookie).expect(401);
+  });
+
+  it('POST /admin/auth/logout without a cookie is a no-op', async () => {
+    // Should not error, just succeed silently
+    const res = await request(app.getHttpServer()).post('/admin/auth/logout').expect(200);
+    expect(res.body.ok).toBe(true);
+  });
+
   it('rejects a merchant-facing route with the admin cookie', async () => {
     await request(app.getHttpServer()).get('/auth/me').set('Cookie', adminCookie).expect(401);
   });
