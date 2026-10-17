@@ -4,16 +4,7 @@ import { Client } from '@stellar/stellar-sdk/contract';
 import type { MethodOptions, AssembledTransaction, Result } from '@stellar/stellar-sdk/contract';
 import { Networks } from '@stellar/stellar-sdk';
 import { getFacilitatorSigner, withFacilitatorSubmissionLock } from '../common/facilitator-signer';
-import { NETWORK_PASSPHRASE, RPC_URL } from '../common/stellar-network';
-
-// konfirm-contracts/README.md's "Deployed addresses (Testnet)" table --
-// same source admin-treasury.service.ts/facilitator-sweep.service.ts read
-// their own contract ids from. Confirmed live before wiring anything else
-// to it: the deployer identity (this backend's own facilitator signer) is
-// genuinely this contract's stored admin -- record_payment requires it,
-// and a real test call against testnet succeeded (payment id 1,
-// 2026-09-19, via the CLI directly).
-const PAYMENT_CONTRACT_ID = 'CCYRA6JT2L4NS5FG4B5TP52JPCGCPYSP7M6LUDUY2QA37V5UBXWJBRHV';
+import { NETWORK_PASSPHRASE, RPC_URL, PAYMENT_CONTRACT_ID } from '../common/stellar-network';
 const STROOPS_PER_UNIT = 10_000_000;
 
 interface PaymentContract {
