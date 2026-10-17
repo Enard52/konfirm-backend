@@ -222,6 +222,20 @@ export class AuthService {
     this.logger.log(`password reset completed for merchant ${merchantId}`);
   }
 
+  // Bumps session_version the same way a password reset does, so the token
+  // being logged out (and any copy of it) stops passing AuthGuard. A missing
+  // or already-invalid token has nothing to revoke, so it's a no-op.
+  async logout(token: string | undefined): Promise<void> {
+    if (!token) return;
+    let claims: MerchantClaims;
+    try {
+      claims = this.verifyToken(token);
+    } catch {
+      return;
+    }
+    await pool.query('UPDATE merchants SET session_version = session_version + 1 WHERE id = $1', [claims.id]);
+  }
+
   // "Activated" is computed here (EXISTS a paid payment), not stored — see
   // migration 014's comment for why that's deliberate.
   async myReferrals(merchantId: string): Promise<{
