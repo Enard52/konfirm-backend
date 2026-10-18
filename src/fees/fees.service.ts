@@ -168,216 +168,84 @@ export class FeesService {
       await client.query('COMMIT');
       return this.describeSettlement(settlementId, unsignedXdr, expiresAt, merchantId);
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
     }
   }
 
-  // Each owed asset gets one payment operation from the merchant to the fee
-  // account. The merchant's own account is the source, so no fee is paid from
-  // Konfirm's side.
+  // Submits the merchant-signed settlement transaction to Horizon.
+  async submitSigned(merchantId: string, settlementId: string, signedXdr: string) {
+    const res = await pool.query(
+      `SELECT id, status, expires_at FROM fee_settlements WHERE id = $1 AND merchant_id = $2`,
+      [settlementId, merchantId],
+    );
+    const settlement = res.rows[0];
+    if (!settlement) throw new NotFoundException('settlement not found');
+    if (settlement.status !== 'pending') throw new ConflictException('settlement is not pending');
+    if (new Date(settlement.expires_at) <= new Date()) throw new BadRequestException('settlement has expired');
+
+    let tx;
+    try {
+      tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
+    } catch {
+      throw new BadRequestException('malformed signed transaction');
+    }
+
+    try {
+      const result = await this.horizon.submitTransaction(tx as any);
+      await pool.query(`UPDATE fee_settlements SET status = 'settled', tx_hash = $2 WHERE id = $1`, [settlementId, result.hash]);
+      await pool.query(
+        `UPDATE payments SET fee_status = 'settled'
+         WHERE fee_settlement_id = $1`,
+        [settlementId],
+      );
+      return { status: 'settled', tx_hash: result.hash };
+    } catch (err: any) {
+      this.logger.warn(`settlement ${settlementId} submission failed: ${err?.message ?? err}`);
+      throw new BadRequestException('transaction submission failed');
+    }
+  }
+
+  private async describeSettlement(id: string, unsignedXdr: string, expiresAt: Date, merchantId: string) {
+    const { rows } = await pool.query(
+      `SELECT i.payment_id, i.amount::text, p.fee_asset_code, p.fee_asset_issuer
+       FROM fee_settlement_items i JOIN payments p ON p.id = i.payment_id
+       WHERE i.settlement_id = $1`,
+      [id],
+    );
+    return {
+      id,
+      merchant_id: merchantId,
+      unsigned_xdr: unsignedXdr,
+      expires_at: expiresAt,
+      items: rows.map((r) => ({
+        payment_id: r.payment_id,
+        amount: r.amount,
+        asset_code: r.fee_asset_code,
+        asset_issuer: r.fee_asset_issuer,
+      })),
+    };
+  }
+
   private async buildUnsigned(merchantAddress: string, totals: Array<{ code: string; issuer: string | null; amount: string }>) {
     const account = await this.horizon.loadAccount(merchantAddress);
-    const feeAddress = platformFeeAddress();
     const builder = new TransactionBuilder(account, {
-      fee: String(Number(BASE_FEE) * totals.length),
+      fee: BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
       timebounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + SETTLEMENT_TTL_SECONDS },
     });
     for (const t of totals) {
       builder.addOperation(
-        Operation.payment({ destination: feeAddress, asset: assetFor(t.code, t.issuer), amount: t.amount }),
+        Operation.payment({
+          destination: platformFeeAddress(),
+          asset: assetFor(t.code, t.issuer),
+          amount: t.amount,
+        }),
       );
     }
     builder.addMemo(Memo.text(SETTLEMENT_MEMO));
     return builder;
-  }
-
-  private async describeSettlement(id: string, unsignedXdr: string, expiresAt: Date, merchantId: string) {
-    const { rows } = await pool.query(
-      `SELECT p.fee_asset_code, p.fee_asset_issuer, SUM(i.amount)::text AS amount,
-              COUNT(DISTINCT i.payment_id)::int AS payments
-       FROM fee_settlement_items i JOIN payments p ON p.id = i.payment_id
-       WHERE i.settlement_id = $1 AND p.merchant_id = $2
-       GROUP BY p.fee_asset_code, p.fee_asset_issuer`,
-      [id, merchantId],
-    );
-    return {
-      settlement_id: id,
-      unsigned_xdr: unsignedXdr,
-      network_passphrase: NETWORK_PASSPHRASE,
-      expires_at: expiresAt,
-      totals: rows.map((row) => ({
-        asset_code: row.fee_asset_code,
-        asset_issuer: row.fee_asset_issuer,
-        amount: fromStroops(toStroops(row.amount)),
-        payments: row.payments,
-      })),
-    };
-  }
-
-  // Submits what the merchant signed. The signed transaction's hash must equal
-  // the hash recorded when the settlement was built, so the merchant can't
-  // swap in a different transaction. Signatures don't change the hash.
-  async submitSigned(merchantId: string, settlementId: string, signedXdr: string) {
-    const { rows } = await pool.query(
-      `SELECT tx_hash, status, expires_at FROM fee_settlements WHERE id = $1 AND merchant_id = $2`,
-      [settlementId, merchantId],
-    );
-    const s = rows[0];
-    if (!s) throw new NotFoundException('settlement not found');
-    if (s.status !== 'pending') throw new ConflictException(`this settlement is already ${s.status}`);
-    if (new Date(s.expires_at) <= new Date()) throw new ConflictException('this settlement expired — create a new one');
-
-    const tx = TransactionBuilder.fromXDR(signedXdr, NETWORK_PASSPHRASE);
-    if (Buffer.from(tx.hash()).toString('hex') !== s.tx_hash) {
-      throw new BadRequestException('the signed transaction is not the one Konfirm built for this settlement');
-    }
-    try {
-      await this.horizon.submitTransaction(tx);
-    } catch (err) {
-      const codes = (err as { response?: { data?: { extras?: { result_codes?: unknown } } } })?.response?.data?.extras?.result_codes;
-      const detail = codes === undefined ? (err instanceof Error ? err.message : String(err)) : JSON.stringify(codes);
-      await this.failSubmission(settlementId, detail);
-      throw new BadRequestException({
-        message: 'the network rejected the settlement',
-        result_codes: codes ?? null,
-      });
-    }
-    await this.confirm(settlementId);
-    return { ok: true, settlement_id: settlementId, tx_hash: s.tx_hash };
-  }
-
-  private async confirm(settlementId: string, client: { query: PoolClient['query'] } = pool) {
-    const { rowCount } = await client.query(
-      `UPDATE fee_settlements SET status = 'confirmed', confirmed_at = NOW(), submission_error = NULL
-       WHERE id = $1 AND status = 'pending'`,
-      [settlementId],
-    );
-    if (!rowCount) return;
-    await client.query(
-      `UPDATE payments p
-       SET fee_owed_raw = p.fee_owed_raw - i.amount,
-           fee_status = CASE WHEN p.fee_owed_raw - i.amount <= 0 THEN 'settled' ELSE 'owed' END,
-           fee_settlement_id = NULL
-       FROM fee_settlement_items i
-       WHERE i.settlement_id = $1 AND p.id = i.payment_id AND p.fee_status = 'claimed'`,
-      [settlementId],
-    );
-  }
-
-  async disputeSettlement(merchantId: string, settlementId: string) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const { rows } = await client.query(
-        `UPDATE fee_settlements SET status = 'disputed'
-         WHERE id = $1 AND merchant_id = $2 AND status = 'pending'
-         RETURNING id`,
-        [settlementId, merchantId],
-      );
-      if (rows.length === 0) {
-        const existing = await client.query('SELECT status FROM fee_settlements WHERE id = $1 AND merchant_id = $2', [settlementId, merchantId]);
-        await client.query('ROLLBACK');
-        if (!existing.rows[0]) throw new NotFoundException('settlement not found');
-        throw new ConflictException(`this settlement is already ${existing.rows[0].status}`);
-      }
-      await client.query(
-        `UPDATE payments SET fee_status = 'owed', fee_settlement_id = NULL
-         WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`,
-        [settlementId],
-      );
-      await client.query('COMMIT');
-      return { ok: true, settlement_id: settlementId, status: 'disputed' };
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
-  private async failSubmission(settlementId: string, detail: string) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(
-        `UPDATE fee_settlements SET submission_error = $2
-         WHERE id = $1 AND status = 'pending'`,
-        [settlementId, detail],
-      );
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
-  // Runs on a schedule. A settlement the merchant signed and submitted outside
-  // the app (for example from another wallet tool) is picked up here, because
-  // its hash is already known. A settlement that expired unsigned releases its
-  // claims back to owed.
-  async sweepPending(): Promise<{ confirmed: number; expired: number }> {
-    const { rows } = await pool.query(
-      `SELECT id, tx_hash, expires_at FROM fee_settlements WHERE status = 'pending' ORDER BY created_at LIMIT 200`,
-    );
-    let confirmed = 0;
-    let expired = 0;
-    for (const s of rows) {
-      const onChain = await this.lookup(s.tx_hash);
-      if (onChain?.successful) {
-        await this.confirm(s.id);
-        confirmed++;
-        continue;
-      }
-      const pastExpiry = new Date(s.expires_at) <= new Date();
-      // A failed on-chain record, or no record once the time bound has passed,
-      // means the settlement can never land. Release its claims.
-      if (onChain?.successful === false || (!onChain && pastExpiry)) {
-        await this.release(s.id);
-        expired++;
-      }
-    }
-    if (confirmed || expired) this.logger.log(`fee settlements: ${confirmed} confirmed, ${expired} released`);
-    return { confirmed, expired };
-  }
-
-  private async release(settlementId: string) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(`UPDATE payments SET fee_status = 'owed', fee_settlement_id = NULL WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`, [settlementId]);
-      await client.query(`UPDATE fee_settlements SET status = 'expired' WHERE id = $1 AND status = 'pending'`, [settlementId]);
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
-  }
-
-  // Returns the Horizon record, or null if the transaction isn't on the ledger.
-  private async lookup(txHash: string): Promise<{ successful: boolean } | null> {
-    try {
-      const rec = await this.horizon.transactions().transaction(txHash).call();
-      return { successful: rec.successful };
-    } catch (err) {
-      if ((err as { response?: { status?: number } })?.response?.status === 404) return null;
-      throw err;
-    }
-  }
-
-  async listSettlements(merchantId: string) {
-    const { rows } = await pool.query(
-      `SELECT id, tx_hash, status, expires_at, confirmed_at, created_at
-       FROM fee_settlements WHERE merchant_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [merchantId],
-    );
-    return rows;
   }
 }
