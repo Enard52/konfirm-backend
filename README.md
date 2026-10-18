@@ -148,6 +148,7 @@ This table lists every route in `src/admin/admin.controller.ts`, and every route
 | `POST` | `/admin/auth/login` | `email, password` | Same no-enumeration error as merchant login |
 | `POST` | `/admin/auth/logout` | — | Revokes all of the admin's sessions (bumps `session_version`) and clears the cookie |
 | `GET` | `/admin/auth/me` 🔐 | — | Current admin's claims |
+| `POST` | `/admin/auth/change-password` 🔐 | `current_password, new_password` | Rotates the admin's own password, signs out every other session, re-issues this session's cookie, and logs `admin.change-password` to `admin_actions` |
 | `GET` | `/admin/stats` 🔐 | — | Real Postgres aggregates for the Overview dashboard: merchant counts by status, today's payment count/volume, a zero-filled 7-day daily volume series — nothing fabricated for the sake of a fuller-looking chart |
 | `GET` | `/admin/merchants` 🔐 | — | All merchants, newest first (`?limit`, `?offset`) |
 | `PATCH` | `/admin/merchants/:id/status` 🔐 | `status: 'active'\|'suspended', reason?` | Takes effect immediately — see below, this isn't just a future-login gate |
