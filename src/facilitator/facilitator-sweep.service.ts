@@ -194,6 +194,63 @@ export class FacilitatorSweepService {
         // channel.service.ts's submitFacilitatorCall) silently drops that
         // auth list, since contract.call(...) alone has no way to know what
         // auth simulation decided was necessary -- confirmed for real: this
-        // exact shape submitted successf
+        // exact shape submitted successfully (PENDING) but then trapped on
+        // execution with "Unauthorized function call for address <signer>"
+        // (found while building and live-testing fee-collection-sweep.
+        // service.ts's identical pattern). channel.service.ts's own two call
+        // sites (checkpoint/finalize_close) never hit this because neither
+        // of those contract functions calls require_auth() at all -- not
+        // because that pattern is generally correct.
+        let prepared;
+        try {
+          prepared = await server.prepareTransaction(tx);
+        } catch (err) {
+          this.logger.error(`sweep simulation/preparation failed: ${err}`);
+          return { success: false, errorReason: 'sweep_simulation_failed' };
+        }
 
-/* … truncated 2417 chars — edit only what you need near the top … */
+        const { signedTxXdr, error: signError } = await signer.signTransaction(prepared.toXDR(), {
+          networkPassphrase: NETWORK_PASSPHRASE,
+        });
+        if (signError || !signedTxXdr) {
+          return { success: false, errorReason: 'sweep_signing_failed' };
+        }
+
+        const txToSubmit = TransactionBuilder.fromXDR(signedTxXdr, NETWORK_PASSPHRASE);
+        const sendResult = await server.sendTransaction(txToSubmit);
+        if (sendResult.status !== 'PENDING') {
+          return { success: false, errorReason: 'sweep_submission_failed' };
+        }
+        sentHash = sendResult.hash;
+      } catch (err) {
+        this.logger.error(`sweep transfer failed: ${err}`);
+        return { success: false, errorReason: 'sweep_failed' };
+      }
+
+      return this.pollForTransaction(server, sentHash);
+    });
+  }
+
+  private async pollForTransaction(
+    server: rpc.Server,
+    txHash: string,
+    maxAttempts = 15,
+    delayMs = 1000,
+  ): Promise<{ success: boolean; transaction: string; errorReason?: string }> {
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const result = await server.getTransaction(txHash);
+        if (result.status === 'SUCCESS') {
+          return { success: true, transaction: txHash };
+        }
+        if (result.status === 'FAILED') {
+          return { success: false, transaction: txHash, errorReason: 'transaction_failed' };
+        }
+      } catch {
+        // NOT_FOUND while still pending -- expected, keep polling.
+      }
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return { success: false, transaction: txHash, errorReason: 'transaction_timeout' };
+  }
+}
