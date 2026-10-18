@@ -16,6 +16,17 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+// Same bcrypt 72-byte cap as auth.controller.ts's passwordSchema.
+const passwordSchema = z
+  .string()
+  .min(8, 'password must be at least 8 characters')
+  .refine((p) => Buffer.byteLength(p, 'utf8') <= 72, 'password must be 72 bytes or fewer');
+
+const changePasswordSchema = z.object({
+  current_password: z.string().min(1),
+  new_password: passwordSchema,
+});
+
 const COOKIE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // Deliberately no POST /admin/auth/signup — an internet-facing "create an
@@ -70,6 +81,33 @@ export class AdminAuthController {
   @ApiResponse({ status: 401, description: 'Not authenticated as admin.' })
   me(@Req() req: AuthedAdminRequest) {
     return { admin: req.admin };
+  }
+
+  // No forgot-password flow for admins yet: this covers rotating a password
+  // that may have been phished, for an admin who can still log in.
+  @Post('change-password')
+  @HttpCode(200)
+  @UseGuards(AdminGuard)
+  @Throttle(AUTH_THROTTLE)
+  @ApiCookieAuth('admin-session')
+  @ApiOperation({
+    summary: 'Change own admin password',
+    description:
+      'Requires the current password. Signs out every other session for this admin (bumps session_version) and ' +
+      'issues a fresh cookie for this one. Logged to admin_actions. Rate-limited to 10 req/min per IP.',
+  })
+  @ApiBody(zodBody(changePasswordSchema, 'Admin change password request'))
+  @ApiResponse({ status: 200, description: 'Password changed. A new konfirm_admin_session cookie is set.' })
+  @ApiResponse({ status: 400, description: 'Current password is incorrect, or the new password is invalid or unchanged.' })
+  @ApiResponse({ status: 401, description: 'Not authenticated as admin.' })
+  async changePassword(
+    @Req() req: AuthedAdminRequest,
+    @Body(new ZodValidationPipe(changePasswordSchema)) body: z.infer<typeof changePasswordSchema>,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { token, admin } = await this.adminAuth.changePassword(req.admin.id, body.current_password, body.new_password);
+    this.setSessionCookie(res, token);
+    return { admin };
   }
 
   private setSessionCookie(res: Response, token: string) {

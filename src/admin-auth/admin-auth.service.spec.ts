@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import * as jwt from 'jsonwebtoken';
 import { pool } from '../db/pool';
@@ -76,6 +76,47 @@ describe('AdminAuthService (integration, real Postgres)', () => {
 
     expect(wrongPasswordMessage).not.toBe('');
     expect(wrongPasswordMessage).toBe(nonexistentEmailMessage);
+  });
+
+  describe('changePassword', () => {
+    it('rotates the password, bumps session_version, and logs the change', async () => {
+      const email = freshAdminEmail();
+      const id = await createAdmin(email, 'old-admin-password', 'Rotate Test');
+      const { token: before } = await adminAuth.login(email, 'old-admin-password');
+
+      const { token, admin } = await adminAuth.changePassword(id, 'old-admin-password', 'new-admin-password');
+      expect(admin.id).toBe(id);
+      expect(adminAuth.verifyToken(token).sv).toBe(adminAuth.verifyToken(before).sv! + 1);
+
+      await expect(adminAuth.login(email, 'old-admin-password')).rejects.toThrow(UnauthorizedException);
+      await expect(adminAuth.login(email, 'new-admin-password')).resolves.toBeDefined();
+
+      const { rows } = await pool.query(
+        `SELECT target_type, target_id FROM admin_actions WHERE admin_id = $1 AND action = 'admin.change-password'`,
+        [id],
+      );
+      expect(rows).toEqual([{ target_type: 'admin', target_id: id }]);
+    });
+
+    it('rejects a wrong current password and leaves everything as it was', async () => {
+      const email = freshAdminEmail();
+      const id = await createAdmin(email, 'the-real-password', 'Wrong Current Test');
+
+      await expect(adminAuth.changePassword(id, 'not-the-real-password', 'new-admin-password')).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(adminAuth.login(email, 'the-real-password')).resolves.toBeDefined();
+      const { rows } = await pool.query('SELECT session_version FROM admins WHERE id = $1', [id]);
+      expect(rows[0].session_version).toBe(0);
+      const logged = await pool.query('SELECT 1 FROM admin_actions WHERE admin_id = $1', [id]);
+      expect(logged.rows.length).toBe(0);
+    });
+
+    it('rejects a new password equal to the current one', async () => {
+      const email = freshAdminEmail();
+      const id = await createAdmin(email, 'same-old-password', 'Same Password Test');
+      await expect(adminAuth.changePassword(id, 'same-old-password', 'same-old-password')).rejects.toThrow(BadRequestException);
+    });
   });
 
   it('rejects a token signed with a different secret (admin tokens are not merchant tokens)', () => {
