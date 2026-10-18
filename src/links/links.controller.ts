@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { ApiBody, ApiCookieAuth, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { AuthedRequest, AuthGuard } from '../auth/auth.guard';
 import { LinksService } from './links.service';
+import { zodBody } from '../common/zod-to-openapi';
 
 // merchant_id is deliberately absent from this schema — it used to be a
 // client-supplied field, which meant any caller who knew or guessed a UUID
@@ -21,12 +23,24 @@ const createLinkSchema = z.object({
   idempotency_key: z.string().min(1).max(255).optional(),
 });
 
+@ApiTags('Links')
 @Controller('links')
 export class LinksController {
   constructor(private readonly links: LinksService) {}
 
   @Post()
   @UseGuards(AuthGuard)
+  @ApiCookieAuth('merchant-session')
+  @ApiOperation({
+    summary: 'Create a payment link',
+    description:
+      'Creates a new payment link for the authenticated merchant. ' +
+      '`merchant_id` is never accepted from the client — it is always derived from the session. ' +
+      'Supplying an `idempotency_key` makes retries safe: the same key returns the original link.',
+  })
+  @ApiBody(zodBody(createLinkSchema, 'Create link request'))
+  @ApiResponse({ status: 201, description: 'Payment link created.' })
+  @ApiResponse({ status: 401, description: 'Not authenticated.' })
   create(
     @Body(new ZodValidationPipe(createLinkSchema)) body: z.infer<typeof createLinkSchema>,
     @Req() req: AuthedRequest,
@@ -35,6 +49,15 @@ export class LinksController {
   }
 
   @Get(':id/public')
+  @ApiOperation({
+    summary: 'Get public projection of a payment link',
+    description:
+      'Returns a narrow, public-safe projection of the link: amount, currency, description, ' +
+      'merchant name, and merchant Stellar address. Safe to call from a checkout page without auth.',
+  })
+  @ApiParam({ name: 'id', description: 'Payment link UUID', type: 'string' })
+  @ApiResponse({ status: 200, description: 'Public link details.' })
+  @ApiResponse({ status: 404, description: 'Link not found.' })
   getPublic(@Param('id') id: string) {
     return this.links.getPublic(id);
   }
