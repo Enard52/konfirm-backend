@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { BASE_FEE, Horizon, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
-import { resolveAsset } from '../common/asset';
+import { hasTrustline, resolveAsset } from '../common/asset';
 import { withRetry } from '../common/retry';
 import { AnchorClient } from '../common/anchor-client';
 import { ANCHOR_AUTH_URL, ANCHOR_TRANSFER_SERVER, HORIZON_URL, NETWORK_PASSPHRASE } from '../common/stellar-network';
@@ -71,10 +71,7 @@ export class DepositsService {
       } catch {
         throw new BadRequestException('the destination account was not found on the network');
       }
-      const hasTrustline = toBalances.some(
-        (b) => b.asset_code === asset.getCode() && b.asset_issuer === asset.getIssuer(),
-      );
-      if (!hasTrustline) {
+      if (!hasTrustline(toBalances, asset)) {
         throw new BadRequestException('the destination wallet has no trustline for this asset yet');
       }
     }
