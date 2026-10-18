@@ -38,9 +38,18 @@ Freighter checkout already has this property (the payer is known, and the transa
 - Payers pay the link amount exactly, so QR and every mobile wallet work for every link.
 - The reconciler records each QR payment's fee as owed (`fee_status = 'owed'`), with the fee computed from the merchant's effective rate at payment time. Payments that did include the fee leg stay `collected`.
 - The merchant clears all or part of owed fees from the dashboard. The backend builds one transaction, paying the selected amount per asset from the merchant's own account to the fee account. The merchant signs it in Freighter. Konfirm never holds the merchant's key, so this stays non-custodial.
-- The backend confirms the settlement on Horizon by hash and subtracts only its recorded allocations from the owed balances; any remainder stays owed.
+- The backend confirms the settlement on Horizon by hash and subtracts only its recorded allocations from the owed balances; any remainder stays owed. Once confirmed, `fees.service.ts` `confirm()` marks those payments `settled`.
 - Enforcement is visible but not automatic: owed fees appear on the dashboard and the admin page, and an admin can suspend an account that stays in arrears. An automatic cash-out block is a possible later step.
 - Trade-off: a merchant who never settles keeps the fee owed. Enforcement depends on that visibility and on suspension, not on the payment itself.
+
+### `fee_status` semantics
+
+The `fee_status` enum (`db/migrations/022_fee_settlement.up.sql`) is `('none', 'collected', 'owed', 'claimed', 'settled')`. Two of these are easy to confuse:
+
+- `collected` — the fee leg was present at checkout (the non-QR path, where the payer paid the fee atomically with the link amount). This is a checkout-time state, not proof the merchant has cleared anything.
+- `settled` — the fee was cleared on-chain by a confirmed settlement (the terminal state written by `fees.service.ts` `confirm()`).
+
+So to find "fees successfully collected" via settlement, filter on `fee_status = 'settled'`, not `'collected'`. Filtering on `'collected'` silently misses every merchant-settled fee.
 
 Cash-out variant (not chosen): add the owed fee as a second operation in the existing cash-out transaction the merchant already signs. Fewer steps for the merchant, but nothing is collected until they cash out.
 

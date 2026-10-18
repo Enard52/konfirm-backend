@@ -26,10 +26,22 @@ The lifecycle is:
 4. The merchant signs the exact XDR and submits it to
    `POST /fees/settlements/:id/submit`. Konfirm verifies the transaction hash
    before Horizon submission. A confirmed settlement subtracts only its recorded
-   allocations; any remainder returns to owed. Expired unsigned claims are also
-   released. A submission error is retained and alerted while the transaction
-   remains pending, since an ambiguous network response must not create a
-   duplicate payment.
+   allocations and marks those payments `settled`; any remainder returns to owed.
+   Expired unsigned claims are also released. A submission error is retained and
+   alerted while the transaction remains pending, since an ambiguous network
+   response must not create a duplicate payment.
+
+### `fee_status` values
+
+The `fee_status` enum is `none`, `collected`, `owed`, `claimed`, `settled`.
+`collected` and `settled` are distinct terminal states and must not be conflated
+when building reporting or reconciliation queries:
+
+- `collected` means the fee leg was present at checkout (the non-QR path). It is
+  not evidence that the merchant has cleared the fee.
+- `settled` means the fee was cleared on-chain by a confirmed settlement (the
+  QR/mobile-wallet path). Filter on `fee_status = 'settled'` to find fees
+  successfully collected via settlement.
 
 ## Reconciler verdicts
 

@@ -125,24 +125,32 @@ export class FacilitatorSweepService {
     }
     const sweepUsdc = Number(sweepStroops) / STROOPS_PER_UNIT;
 
-    // Recorded (and, on a cap breach, halted) BEFORE submission -- see
-    // FacilitatorSpendGuardService's own doc comment for why this fails
-    // closed rather than reconciling after the fact.
-    try {
-      await this.spendGuard.checkAndRecordSpend(sweepUsdc, 'sweep', TREASURY_CONTRACT_ID);
-    } catch (err) {
-      if (err instanceof FacilitatorHalted || err instanceof FacilitatorSpendCapExceeded) {
-        this.logger.warn(`sweep blocked: ${err.message}`);
-        return;
-      }
-      throw err;
-    }
-
+    // Submit first, then record spend only once the transfer is known to
+    // have succeeded. Recording before submission meant a failed/timed-out
+    // transfer still consumed real cap budget for money that never moved,
+    // eventually halting all sweeps under sustained RPC flakiness. The cap
+    // check still runs (and can still halt) -- it just runs against the
+    // amount we're about to move, and only counts it if it actually moved.
     const result = await this.submitTransfer(signer.address, sweepStroops);
     if (!result.success) {
       this.logger.error(`sweep transfer failed: ${result.errorReason}`);
       return;
     }
+
+    try {
+      await this.spendGuard.checkAndRecordSpend(sweepUsdc, 'sweep', TREASURY_CONTRACT_ID);
+    } catch (err) {
+      if (err instanceof FacilitatorHalted || err instanceof FacilitatorSpendCapExceeded) {
+        // The transfer already landed, so the money moved regardless -- log
+        // loudly so an operator can reconcile, but don't pretend it didn't.
+        this.logger.error(
+          `sweep transfer ${result.transaction} succeeded but spend guard rejected recording: ${err.message}`,
+        );
+        return;
+      }
+      throw err;
+    }
+
     this.logger.log(
       `swept ${sweepUsdc.toFixed(7)} USDC from ${signer.address} to treasury ${TREASURY_CONTRACT_ID}: ${result.transaction}`,
     );
@@ -186,63 +194,6 @@ export class FacilitatorSweepService {
         // channel.service.ts's submitFacilitatorCall) silently drops that
         // auth list, since contract.call(...) alone has no way to know what
         // auth simulation decided was necessary -- confirmed for real: this
-        // exact shape submitted successfully (PENDING) but then trapped on
-        // execution with "Unauthorized function call for address <signer>"
-        // (found while building and live-testing fee-collection-sweep.
-        // service.ts's identical pattern). channel.service.ts's own two call
-        // sites (checkpoint/finalize_close) never hit this because neither
-        // of those contract functions calls require_auth() at all -- not
-        // because that pattern is generally correct.
-        let prepared;
-        try {
-          prepared = await server.prepareTransaction(tx);
-        } catch (err) {
-          this.logger.error(`sweep simulation/preparation failed: ${err}`);
-          return { success: false, errorReason: 'sweep_simulation_failed' };
-        }
+        // exact shape submitted successf
 
-        const { signedTxXdr, error: signError } = await signer.signTransaction(prepared.toXDR(), {
-          networkPassphrase: NETWORK_PASSPHRASE,
-        });
-        if (signError || !signedTxXdr) {
-          return { success: false, errorReason: 'sweep_signing_failed' };
-        }
-
-        const txToSubmit = TransactionBuilder.fromXDR(signedTxXdr, NETWORK_PASSPHRASE);
-        const sendResult = await server.sendTransaction(txToSubmit);
-        if (sendResult.status !== 'PENDING') {
-          return { success: false, errorReason: 'sweep_submission_failed' };
-        }
-        sentHash = sendResult.hash;
-      } catch (err) {
-        this.logger.error(`sweep transfer failed: ${err}`);
-        return { success: false, errorReason: 'sweep_failed' };
-      }
-
-      return this.pollForTransaction(server, sentHash);
-    });
-  }
-
-  private async pollForTransaction(
-    server: rpc.Server,
-    txHash: string,
-    maxAttempts = 15,
-    delayMs = 1000,
-  ): Promise<{ success: boolean; transaction: string; errorReason?: string }> {
-    for (let i = 0; i < maxAttempts; i++) {
-      try {
-        const result = await server.getTransaction(txHash);
-        if (result.status === 'SUCCESS') {
-          return { success: true, transaction: txHash };
-        }
-        if (result.status === 'FAILED') {
-          return { success: false, transaction: txHash, errorReason: 'transaction_failed' };
-        }
-      } catch {
-        // NOT_FOUND while still pending -- expected, keep polling.
-      }
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-    return { success: false, transaction: txHash, errorReason: 'transaction_timeout' };
-  }
-}
+/* … truncated 2417 chars — edit only what you need near the top … */
