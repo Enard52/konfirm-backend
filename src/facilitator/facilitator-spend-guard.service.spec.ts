@@ -32,15 +32,23 @@ describe('FacilitatorSpendGuardService', () => {
     expect(status.halted).toBe(true);
   });
 
-  it('treats a non-numeric cap as $0 -- a malformed value fails closed, not open', async () => {
-    // Number('100usd') is NaN, and `spent + amount > NaN` is always false, so
-    // without the guard a typo would silently disable the cap entirely.
-    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '100usd';
-    await expect(guard.checkAndRecordSpend(1, 'sweep')).rejects.toThrow(FacilitatorSpendCapExceeded);
+  it('fails closed on a non-numeric cap -- a config typo must never disable the cap', async () => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = '5000usdc';
+    await expect(guard.checkAndRecordSpend(1, 'sweep', 'typo-1')).rejects.toThrow(FacilitatorSpendCapExceeded);
     const status = await guard.status();
     expect(status.halted).toBe(true);
-    expect(status.capUsdc).toBe(0);
+    expect(status.haltReason).toContain('cap misconfigured');
     expect(status.spentTodayUsdc).toBe(0);
+    // Never NaN (which JSON-serializes to null and reads as "no cap"), and
+    // the misconfiguration is reported alongside it.
+    expect(status.capUsdc).toBe(0);
+    expect(status.capConfigError).toContain('FACILITATOR_DAILY_SPEND_CAP_USDC');
+  });
+
+  it.each(['Infinity', '', '-100', '1e9', '0x10'])('treats cap value %j as misconfigured', async (raw) => {
+    process.env.FACILITATOR_DAILY_SPEND_CAP_USDC = raw;
+    await expect(guard.checkAndRecordSpend(0.01, 'sweep')).rejects.toThrow(FacilitatorSpendCapExceeded);
+    expect((await guard.status()).capConfigError).not.toBeNull();
   });
 
   it('records spend under the cap and reflects it in status()', async () => {
@@ -50,6 +58,7 @@ describe('FacilitatorSpendGuardService', () => {
     expect(status.halted).toBe(false);
     expect(status.spentTodayUsdc).toBe(30);
     expect(status.capUsdc).toBe(100);
+    expect(status.capConfigError).toBeNull();
   });
 
   it('accumulates spend across calls against the same daily cap', async () => {
