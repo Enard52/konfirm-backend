@@ -8,10 +8,13 @@
 -- the merchant's key.
 --
 --   none      no fee expected (zero fee, or a pre-fee legacy row)
---   collected the fee leg was on-chain at checkout
+--   collected the fee leg was on-chain at checkout (non-QR path)
 --   owed      expected but not collected; the merchant owes it
 --   claimed   included in a pending settlement the merchant hasn't signed yet
---   settled   cleared on-chain by a confirmed settlement
+--   settled   cleared on-chain by a confirmed settlement (terminal status
+--             written by fees.service.ts confirm(); distinct from
+--             'collected', which only means the fee leg was present at
+--             checkout)
 ALTER TABLE payments
   ADD COLUMN IF NOT EXISTS fee_status TEXT NOT NULL DEFAULT 'none'
     CHECK (fee_status IN ('none', 'collected', 'owed', 'claimed', 'settled')),
