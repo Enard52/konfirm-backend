@@ -1,7 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { BASE_FEE, Horizon, Memo, Networks, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
 import { pool } from '../db/pool';
-import { resolveAsset } from '../common/asset';
+import { hasTrustline, resolveAsset } from '../common/asset';
 import { withRetry } from '../common/retry';
 import { isAllowedOnChain } from '../common/onchain-compliance';
 import { getEffectiveFeeBps } from '../common/effective-fee';
@@ -110,10 +110,7 @@ export class PaymentsService {
     // both legs.
     if (!asset.isNative()) {
       const balances = payerAccount.balances as Array<{ asset_code?: string; asset_issuer?: string }>;
-      const hasTrustline = balances.some(
-        (b) => b.asset_code === asset.getCode() && b.asset_issuer === asset.getIssuer(),
-      );
-      if (!hasTrustline) {
+      if (!hasTrustline(balances, asset)) {
         builder.addOperation(Operation.changeTrust({ asset }));
       }
     }
