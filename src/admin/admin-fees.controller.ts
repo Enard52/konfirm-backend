@@ -1,13 +1,24 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
+import { ApiCookieAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { AdminGuard } from '../admin-auth/admin-auth.guard';
 import { pool } from '../db/pool';
 
 // Who owes what. Read-only: settlement is the merchant's signature, and a
 // merchant in arrears is handled through the existing suspend action.
+@ApiTags('Admin Fees')
 @Controller('admin/fees')
 @UseGuards(AdminGuard)
+@ApiCookieAuth('admin-session')
 export class AdminFeesController {
   @Get('owed')
+  @ApiOperation({
+    summary: 'List owed fees across all merchants',
+    description:
+      'Owed platform fee totals grouped by merchant and asset, including whether the merchant ' +
+      'has any disputed settlements. Enforcement is visibility + suspension, not an automatic block.',
+  })
+  @ApiResponse({ status: 200, description: 'Array of { merchant_id, name, email, status, asset_code, amount, payments, oldest_owed_at, has_disputed_settlement }.' })
+  @ApiResponse({ status: 401, description: 'Not authenticated as admin.' })
   async owed() {
     const { rows } = await pool.query(
       `SELECT m.id AS merchant_id, m.name, m.email, m.status,
@@ -25,6 +36,12 @@ export class AdminFeesController {
   }
 
   @Get('disputed')
+  @ApiOperation({
+    summary: 'List disputed fee settlements awaiting review',
+    description: 'Disputed settlements with their line items. Admins review these and may act via merchant suspend if warranted.',
+  })
+  @ApiResponse({ status: 200, description: 'Array of disputed settlement records with totals.' })
+  @ApiResponse({ status: 401, description: 'Not authenticated as admin.' })
   async disputed() {
     const { rows } = await pool.query(
       `SELECT fs.id AS settlement_id, fs.merchant_id, m.name, m.email,

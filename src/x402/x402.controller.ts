@@ -1,9 +1,11 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import type { PaymentPayload, PaymentRequirements } from './x402.types';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { X402Service } from './x402.service';
+import { zodBody } from '../common/zod-to-openapi';
 
 const paymentRequirementsSchema = z.object({
   scheme: z.string(),
@@ -37,6 +39,7 @@ type X402Request = z.infer<typeof x402RequestSchema>;
 // controller). Throttled conservatively since every call does a real
 // Soroban RPC round-trip, matching the precedent set for other
 // external-service-calling controllers like withdrawals.controller.ts.
+@ApiTags('x402')
 @Controller('x402')
 @Throttle({ default: { limit: 20, ttl: 60_000 } })
 export class X402Controller {
@@ -48,6 +51,14 @@ export class X402Controller {
   // gets a higher ceiling than the RPC-backed verify/settle routes below.
   @Get('supported')
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Get supported x402 schemes and networks',
+    description:
+      'Returns the schemes and networks this facilitator supports. ' +
+      'Resource servers call this once at startup via @x402/core\'s HTTPFacilitatorClient.getSupported(). ' +
+      'In-memory, no RPC round-trip. Unauthenticated.',
+  })
+  @ApiResponse({ status: 200, description: 'Supported schemes/networks object.' })
   supported() {
     return this.x402.getSupported();
   }
@@ -58,6 +69,17 @@ export class X402Controller {
   // verify()/settle() are the real, stricter validators for anything
   // scheme-specific underneath `payload`/`extra`.
   @Post('verify')
+  @ApiOperation({
+    summary: 'Verify an x402 payment',
+    description:
+      'Verifies that a payment payload satisfies the stated requirements. ' +
+      'Calls @x402/core\'s verify() — the Zod schema here validates shape only; ' +
+      'scheme-specific validation happens inside the package. ' +
+      'Rate-limited to 20 req/min (Soroban RPC round-trip). Unauthenticated.',
+  })
+  @ApiBody(zodBody(x402RequestSchema, 'x402 verify request'))
+  @ApiResponse({ status: 200 | 201, description: 'Verification result (success or failure with reason).' })
+  @ApiResponse({ status: 422, description: 'Malformed request body.' })
   verify(@Body(new ZodValidationPipe(x402RequestSchema)) body: X402Request) {
     return this.x402.verify(
       body.x402Version,
@@ -67,6 +89,15 @@ export class X402Controller {
   }
 
   @Post('settle')
+  @ApiOperation({
+    summary: 'Settle an x402 payment',
+    description:
+      'Settles a verified payment on-chain. Calls @x402/core\'s settle(). ' +
+      'Rate-limited to 20 req/min. Unauthenticated.',
+  })
+  @ApiBody(zodBody(x402RequestSchema, 'x402 settle request'))
+  @ApiResponse({ status: 200 | 201, description: 'Settlement result.' })
+  @ApiResponse({ status: 422, description: 'Malformed request body.' })
   settle(@Body(new ZodValidationPipe(x402RequestSchema)) body: X402Request) {
     return this.x402.settle(
       body.x402Version,
