@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 
 export interface SubmitListingInput {
@@ -34,8 +35,33 @@ export class BazaarService {
   // approves it (AdminBazaarService). No auth on this endpoint by design,
   // same reasoning as deposits.controller.ts/x402.controller.ts: it's
   // called by parties with no prior relationship to Konfirm.
+  //
+  // The cap check and the insert run under one per-URL advisory lock, so two
+  // concurrent submissions for the same URL serialize rather than both
+  // passing the pre-check (same pattern as fees.service.ts's
+  // createSettlement). The partial unique index on pending URLs is the
+  // DB-level backstop.
   async submit(input: SubmitListingInput) {
-    const caps = await pool.query(
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`bazaar-listing:${input.url}`]);
+      const row = await this.insertWithinCaps(client, input);
+      await client.query('COMMIT');
+      return row;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      if ((err as { code?: string }).code === '23505') {
+        throw new ConflictException('a listing for this URL is already awaiting review');
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async insertWithinCaps(client: PoolClient, input: SubmitListingInput) {
+    const caps = await client.query(
       `SELECT
          COUNT(*) FILTER (WHERE status = 'pending')::int AS pending,
          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS last_day,
@@ -51,7 +77,7 @@ export class BazaarService {
       throw new ServiceUnavailableException('the listing queue is full right now — please try again later');
     }
 
-    const { rows } = await pool.query(
+    const { rows } = await client.query(
       `INSERT INTO bazaar_listings (kind, name, url, description, network, scheme, contact_email)
        VALUES ($1, $2, $3, $4, COALESCE($5, 'stellar:testnet'), COALESCE($6, 'exact'), $7)
        RETURNING id, kind, status, created_at`,

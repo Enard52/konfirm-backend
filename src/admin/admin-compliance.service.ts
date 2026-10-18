@@ -27,8 +27,14 @@ export class AdminComplianceService {
     }
   }
 
-  async unblock(id: string) {
-    const { rows } = await pool.query('DELETE FROM blocked_addresses WHERE id = $1 RETURNING id', [id]);
+  // Returns the deleted row so the caller can write the address into the
+  // audit log — once the row is gone, its id alone resolves to nothing.
+  async unblock(id: string): Promise<{ stellar_address: string; reason: string | null }> {
+    const { rows } = await pool.query(
+      'DELETE FROM blocked_addresses WHERE id = $1 RETURNING stellar_address, reason',
+      [id],
+    );
     if (rows.length === 0) throw new NotFoundException('blocked address not found');
+    return rows[0];
   }
 }

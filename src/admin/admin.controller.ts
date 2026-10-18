@@ -55,6 +55,7 @@ const rewindCursorSchema = z.object({
 
 const setBazaarListingStatusSchema = z.object({
   status: z.enum(['approved', 'rejected']),
+  reason: z.string().max(500).optional(),
 });
 
 // One controller for the whole admin resource surface rather than one per
@@ -268,8 +269,11 @@ export class AdminController {
   @ApiResponse({ status: 401, description: 'Not authenticated as admin.' })
   @ApiResponse({ status: 404, description: 'Record not found.' })
   async unblockAddress(@Param('id') id: string, @Req() req: AuthedAdminRequest) {
-    await this.compliance.unblock(id);
-    await this.actions.log(req.admin.id, 'compliance.unblock-address', 'blocked_address', id);
+    const removed = await this.compliance.unblock(id);
+    await this.actions.log(req.admin.id, 'compliance.unblock-address', 'blocked_address', id, {
+      stellar_address: removed.stellar_address,
+      originalReason: removed.reason,
+    });
     return { ok: true };
   }
 
@@ -501,8 +505,11 @@ export class AdminController {
     @Body(new ZodValidationPipe(setBazaarListingStatusSchema)) body: z.infer<typeof setBazaarListingStatusSchema>,
     @Req() req: AuthedAdminRequest,
   ) {
-    const listing = await this.bazaar.setStatus(id, body.status, req.admin.id);
-    await this.actions.log(req.admin.id, `bazaar-listing.${body.status}`, 'bazaar_listing', id);
+    const { previous_status, ...listing } = await this.bazaar.setStatus(id, body.status, req.admin.id);
+    await this.actions.log(req.admin.id, `bazaar-listing.${body.status}`, 'bazaar_listing', id, {
+      reason: body.reason,
+      previousStatus: previous_status,
+    });
     return listing;
   }
 

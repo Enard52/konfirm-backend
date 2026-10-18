@@ -87,7 +87,8 @@ export class WithdrawalsController {
     // cash-out, which has already succeeded on the anchor's side by now.
     try {
       await pool.query(
-        `INSERT INTO withdrawal_attempts (merchant_id, currency, anchor_tx_id, token) VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO withdrawal_attempts (merchant_id, currency, anchor_tx_id, token) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (anchor_tx_id) DO NOTHING`,
         [req.merchant.id, body.currency, result.id, body.token],
       );
     } catch (err) {
