@@ -16,7 +16,7 @@ Cashing out to a bank account is a real SEP-10 (auth) + SEP-24 (interactive with
 
 ## Tech stack
 
-- **NestJS 10** / TypeScript, `ts-node` (no build step in dev — there is no hot reload either; restart the process after editing anything under `src/`)
+- **NestJS 11** / TypeScript, `ts-node` (no build step in dev — there is no hot reload either; restart the process after editing anything under `src/`)
 - **PostgreSQL**, raw `pg` pool — no ORM. Migrations are plain, ordered SQL files in `db/migrations/`
 - **Zod** for request validation at every controller boundary
 - **`@stellar/stellar-sdk`** for building/reading transactions server-side

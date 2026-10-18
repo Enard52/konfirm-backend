@@ -1,8 +1,10 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 import { BazaarService } from './bazaar.service';
+import { zodBody } from '../common/zod-to-openapi';
 
 const submitListingSchema = z.object({
   kind: z.enum(['facilitator', 'resource']),
@@ -20,6 +22,7 @@ const submitListingSchema = z.object({
 // definition, called by parties with no prior relationship to Konfirm
 // (same reasoning already documented on x402.controller.ts and
 // deposits.controller.ts).
+@ApiTags('Bazaar')
 @Controller('bazaar')
 export class BazaarController {
   constructor(private readonly bazaar: BazaarService) {}
@@ -29,6 +32,13 @@ export class BazaarController {
   // x402.controller.ts's /supported.
   @Get('manifest')
   @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Get the x402 Bazaar manifest',
+    description:
+      'Returns the public discovery manifest of approved x402 facilitators and resource servers. ' +
+      'Intended to be polled by resource servers at startup. Unauthenticated.',
+  })
+  @ApiResponse({ status: 200, description: 'Manifest object with approved facilitator and resource listings.' })
   getManifest() {
     return this.bazaar.getManifest();
   }
@@ -39,6 +49,15 @@ export class BazaarController {
   // write endpoint like this has.
   @Post('listings')
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Submit a Bazaar listing for review',
+    description:
+      'Proposes a new facilitator or resource listing. Submissions start in `pending` status and ' +
+      'require admin approval before appearing in the manifest. Unauthenticated but rate-limited.',
+  })
+  @ApiBody(zodBody(submitListingSchema, 'Submit listing request'))
+  @ApiResponse({ status: 201, description: 'Listing submitted for review.' })
+  @ApiResponse({ status: 422, description: 'Validation error (URL must be https, description required, etc.).' })
   submit(@Body(new ZodValidationPipe(submitListingSchema)) body: z.infer<typeof submitListingSchema>) {
     return this.bazaar.submit(body);
   }

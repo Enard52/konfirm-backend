@@ -147,4 +147,18 @@ mod test {
         let allowed = is_allowed_on_chain(&simulation_source()).await;
         assert!(allowed, "the facilitator's own address should never be blocked");
     }
+
+    // Fail-open path: nothing listens on port 1, so every attempt errors
+    // immediately and the check must still resolve to true after the retry.
+    // Bounded by 2 * CHECK_TIMEOUT plus the retry delay, the worst case if
+    // each attempt hung until timeout instead.
+    #[tokio::test]
+    async fn is_allowed_fails_open_when_rpc_is_unreachable() {
+        std::env::set_var("SOROBAN_RPC_URL", "http://127.0.0.1:1");
+        let started = std::time::Instant::now();
+        let allowed = is_allowed_on_chain(&simulation_source()).await;
+        std::env::remove_var("SOROBAN_RPC_URL");
+        assert!(allowed, "an unreachable compliance check must fail open");
+        assert!(started.elapsed() <= 2 * CHECK_TIMEOUT + RETRY_DELAY + Duration::from_secs(1));
+    }
 }
