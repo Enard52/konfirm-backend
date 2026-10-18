@@ -1,4 +1,3 @@
-import { BadRequestException } from '@nestjs/common';
 import { createEd25519Signer } from '@x402/stellar';
 import type { Ed25519Signer } from '@x402/stellar';
 import { NETWORK_CAIP2 } from './stellar-network';
@@ -15,7 +14,7 @@ import { NETWORK_CAIP2 } from './stellar-network';
 export function platformFeeAddress(): string {
   const address = process.env.PLATFORM_FEE_ADDRESS;
   if (!address) {
-    throw new BadRequestException('platform fee collection is not configured (PLATFORM_FEE_ADDRESS unset)');
+    throw new Error('platform fee collection is not configured');
   }
   return address;
 }
@@ -30,7 +29,7 @@ export function platformFeeAddress(): string {
 export function getFeeCollectionSigner(): Ed25519Signer {
   const secretKey = process.env.PLATFORM_FEE_SECRET_KEY;
   if (!secretKey) {
-    throw new BadRequestException('platform fee sweep is not configured (PLATFORM_FEE_SECRET_KEY unset)');
+    throw new Error('platform fee sweep is not configured');
   }
   return createEd25519Signer(secretKey, NETWORK_CAIP2);
 }
