@@ -391,6 +391,15 @@ async fn poll_once(
             continue;
         };
 
+        let muxed_id = match i64::try_from(muxed_id) {
+            Ok(id) => id,
+            Err(_) => {
+                tracing::warn!(paging_token = %op.paging_token, muxed_id, "muxed id exceeds the signed BIGINT range — recording unmatched");
+                *cursor = op.paging_token.clone();
+                continue;
+            }
+        };
+
         let (asset_code, asset_issuer): (String, Option<String>) = match op.asset_type.as_deref() {
             Some("native") => ("XLM".to_string(), None),
             _ => (
@@ -494,7 +503,7 @@ async fn poll_once(
         // a reason. A fee that was expected but absent is flagged, not held:
         // the merchant was paid in full.
         let raw_paid: rust_decimal::Decimal = raw_amount.parse().context("horizon returned a non-decimal payment amount")?;
-        let link = store.link_expectation(merchant.id, muxed_id as i64).await?;
+        let link = store.link_expectation(merchant.id, muxed_id).await?;
         let verdict_issuer = asset_issuer.as_deref();
         let verdict = verdict::assess(link.as_ref(), raw_paid, &asset_code, verdict_issuer);
 
@@ -529,7 +538,7 @@ async fn poll_once(
         let recorded = store
             .record_payment_if_new(
                 merchant,
-                muxed_id as i64,
+                muxed_id,
                 &muxed_address,
                 &payer,
                 &asset_code,

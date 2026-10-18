@@ -3,6 +3,7 @@ import { ApiBody, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/s
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
+import { nonNegativeDecimalStringSchema } from '../common/numeric-validation';
 import { DepositsService } from './deposits.service';
 import { TestnetFaucetGuard } from './testnet-faucet.guard';
 import { zodBody } from '../common/zod-to-openapi';
@@ -17,7 +18,7 @@ const transferSchema = z.object({
   from: z.string().regex(/^G[A-Z2-7]{55}$/),
   to: z.string().regex(/^G[A-Z2-7]{55}$/),
   currency: z.enum(['XLM', 'USDC']),
-  amount: z.string().regex(/^\d+(\.\d{1,7})?$/),
+  amount: nonNegativeDecimalStringSchema('amount', 7, 9_223_372_036_854_775_807n),
 });
 
 // No AuthGuard anywhere here — this exists to get test funds into *any*

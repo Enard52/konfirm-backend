@@ -3,11 +3,13 @@ import { ApiBody, ApiOperation, ApiParam, ApiResponse, ApiTags } from '@nestjs/s
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
+import { nonNegativeIntegerStringSchema, POSTGRES_BIGINT_MAX } from '../common/numeric-validation';
 import { SessionsService } from './sessions.service';
 import { zodBody } from '../common/zod-to-openapi';
 
+const muxedIdSchema = nonNegativeIntegerStringSchema(POSTGRES_BIGINT_MAX, 'muxed_id');
 const reserveSchema = z.object({
-  muxed_id: z.string().regex(/^\d+$/, 'must be a stringified u64'),
+  muxed_id: muxedIdSchema,
 });
 
 @ApiTags('Sessions')
@@ -61,7 +63,9 @@ export class SessionsController {
   @ApiResponse({ status: 400, description: 'muxedId is not a stringified u64.' })
   @ApiResponse({ status: 404, description: 'Link or session not found.' })
   status(@Param('linkId') linkId: string, @Param('muxedId') muxedId: string) {
-    if (!/^\d+$/.test(muxedId)) throw new BadRequestException('muxedId must be a stringified u64');
+    if (!muxedIdSchema.safeParse(muxedId).success) {
+      throw new BadRequestException('muxedId must fit in a non-negative signed 64-bit integer');
+    }
     return this.sessions.statusFor(linkId, muxedId);
   }
 }

@@ -1,6 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Asset, BASE_FEE, Horizon, Memo, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
-import type { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 import { platformFeeAddress } from '../common/platform-fee';
 import { HORIZON_URL, NETWORK_PASSPHRASE } from '../common/stellar-network';
@@ -192,6 +191,43 @@ export class FeesService {
     } catch {
       throw new BadRequestException('malformed signed transaction');
     }
+    await this.confirm(settlementId);
+    return { ok: true, settlement_id: settlementId, tx_hash: s.tx_hash };
+  }
+
+  private async confirm(settlementId: string) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rowCount } = await client.query(
+        `UPDATE fee_settlements SET status = 'confirmed', confirmed_at = NOW()
+         WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [settlementId],
+      );
+      if (rowCount) {
+        await client.query(
+          `UPDATE payments SET fee_status = 'settled'
+           WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`,
+          [settlementId],
+        );
+      }
+  private async confirm(settlementId: string, client: { query: PoolClient['query'] } = pool) {
+    const { rowCount } = await client.query(
+      `UPDATE fee_settlements SET status = 'confirmed', confirmed_at = NOW(), submission_error = NULL
+       WHERE id = $1 AND status = 'pending'`,
+      [settlementId],
+    );
+    if (!rowCount) return;
+    await client.query(
+      `UPDATE payments p
+       SET fee_owed_raw = p.fee_owed_raw - i.amount,
+           fee_status = CASE WHEN p.fee_owed_raw - i.amount <= 0 THEN 'settled' ELSE 'owed' END,
+           fee_settlement_id = NULL
+       FROM fee_settlement_items i
+       WHERE i.settlement_id = $1 AND p.id = i.payment_id AND p.fee_status = 'claimed'`,
+      [settlementId],
+    );
+  }
 
     try {
       const result = await this.horizon.submitTransaction(tx as any);
@@ -215,18 +251,50 @@ export class FeesService {
        WHERE i.settlement_id = $1`,
       [id],
     );
-    return {
-      id,
-      merchant_id: merchantId,
-      unsigned_xdr: unsignedXdr,
-      expires_at: expiresAt,
-      items: rows.map((r) => ({
-        payment_id: r.payment_id,
-        amount: r.amount,
-        asset_code: r.fee_asset_code,
-        asset_issuer: r.fee_asset_issuer,
-      })),
-    };
+    let confirmed = 0;
+    let expired = 0;
+    for (const s of rows) {
+      const onChain = await this.lookup(s.tx_hash);
+      if (onChain?.successful) {
+        await this.confirm(s.id);
+        confirmed++;
+        continue;
+      }
+      const pastExpiry = new Date(s.expires_at) <= new Date();
+      // A failed on-chain record, or no record once the time bound has passed,
+      // means the settlement can never land. Release its claims.
+      if (onChain?.successful === false || (!onChain && pastExpiry)) {
+        await this.release(s.id);
+        expired++;
+      }
+    }
+    if (confirmed || expired) this.logger.log(`fee settlements: ${confirmed} confirmed, ${expired} released`);
+    return { confirmed, expired };
+  }
+
+  private async release(settlementId: string) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rowCount } = await client.query(
+        `UPDATE fee_settlements SET status = 'expired'
+         WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [settlementId],
+      );
+      if (rowCount) {
+        await client.query(
+          `UPDATE payments SET fee_status = 'owed', fee_settlement_id = NULL
+           WHERE fee_settlement_id = $1 AND fee_status = 'claimed'`,
+          [settlementId],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   private async buildUnsigned(merchantAddress: string, totals: Array<{ code: string; issuer: string | null; amount: string }>) {

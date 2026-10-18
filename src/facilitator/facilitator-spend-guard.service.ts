@@ -4,6 +4,7 @@ import { pool } from '../db/pool';
 
 const HALT_KEY = 'halted_at';
 const HALT_REASON_KEY = 'halt_reason';
+const SPEND_GUARD_LOCK_KEY = 402_005;
 
 // A tunable ceiling, not a hardcoded guess -- how much daily exposure is
 // acceptable is an operational/business call, not something to bake into
@@ -39,6 +40,22 @@ export class FacilitatorSpendGuardService {
 
   async checkAndRecordSpend(amountUsdc: number, operation: string, reference?: string): Promise<void> {
     const client = await pool.connect();
+    let transactionOpen = false;
+    try {
+      await client.query('BEGIN');
+      transactionOpen = true;
+      await client.query('SELECT pg_advisory_xact_lock($1)', [SPEND_GUARD_LOCK_KEY]);
+
+      const [haltResult, spendResult] = await Promise.all([
+        client.query<{ value: string }>('SELECT value FROM facilitator_state WHERE key = $1', [HALT_KEY]),
+        client.query<{ total: string }>(
+          `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
+        ),
+      ]);
+      const halted = haltResult.rows[0];
+      if (halted) {
+        throw new FacilitatorHalted(
+          `facilitator signing is halted (since ${halted.value}) pending manual review -- ` +
     try {
       await client.query('BEGIN');
       await client.query("SELECT pg_advisory_xact_lock(hashtext('facilitator-spend-guard'))");
@@ -58,6 +75,12 @@ export class FacilitatorSpendGuardService {
       const cap = dailyCapUsdc();
       if (spentToday + amountUsdc > cap) {
         await this.halt(
+          client,
+          `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
+            `with $${spentToday} already spent today against a $${cap} cap`,
+        );
+        await client.query('COMMIT');
+        transactionOpen = false;
           `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
             `with $${spentToday} already spent today against a $${cap} cap`,
           client,
@@ -75,16 +98,17 @@ export class FacilitatorSpendGuardService {
         reference ?? null,
       ]);
       await client.query('COMMIT');
+      transactionOpen = false;
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      if (transactionOpen) await client.query('ROLLBACK').catch(() => undefined);
       if (err instanceof FacilitatorHalted || err instanceof FacilitatorSpendCapExceeded) throw err;
-      throw new Error(`facilitator spend guard: could not read spend state, refusing to sign (fail closed): ${err}`);
+      throw new Error(`facilitator spend guard: could not read or record spend state, refusing to sign (fail closed): ${err}`);
     } finally {
       client.release();
     }
   }
 
-  private async halt(reason: string, client: Pick<PoolClient, 'query'> = pool): Promise<void> {
+  private async halt(client: PoolClient, reason: string): Promise<void> {
     this.logger.error(`HALTING facilitator signing: ${reason}`);
     await client.query(
       `INSERT INTO facilitator_state (key, value) VALUES ($1, NOW()::text)

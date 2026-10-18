@@ -3,6 +3,7 @@ import { ApiBody, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import { ZodValidationPipe } from '../zod-validation.pipe';
+import { nonNegativeIntegerStringSchema, POSTGRES_BIGINT_MAX } from '../common/numeric-validation';
 import { ChannelService } from './channel.service';
 import { zodBody } from '../common/zod-to-openapi';
 
@@ -11,9 +12,9 @@ import { zodBody } from '../common/zod-to-openapi';
 // service boundary. Signature as hex, matching how it's stored internally
 // (src/common/channel-claim.ts, x402_channels.pending_signature).
 const claimSchema = z.object({
-  channel_id: z.string().regex(/^\d+$/, 'must be a non-negative integer string'),
-  cumulative_amount: z.string().regex(/^\d+$/, 'must be a non-negative integer string'),
-  nonce: z.string().regex(/^\d+$/, 'must be a non-negative integer string'),
+  channel_id: nonNegativeIntegerStringSchema(POSTGRES_BIGINT_MAX, 'channel_id'),
+  cumulative_amount: nonNegativeIntegerStringSchema((1n << 127n) - 1n, 'cumulative_amount'),
+  nonce: nonNegativeIntegerStringSchema(POSTGRES_BIGINT_MAX, 'nonce'),
   signature: z.string().regex(/^[0-9a-fA-F]{128}$/, 'must be a 64-byte hex-encoded ed25519 signature'),
 });
 

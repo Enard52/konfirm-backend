@@ -2,9 +2,11 @@ import { BadRequestException, Controller, Get, Query, Req, UseGuards } from '@ne
 import { ApiCookieAuth, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthedRequest, AuthGuard } from '../auth/auth.guard';
+import { nonNegativeIntegerStringSchema, POSTGRES_BIGINT_MAX } from '../common/numeric-validation';
 import { PaymentsService } from './payments.service';
 
-@ApiTags('Payments')
+const muxedIdSchema = nonNegativeIntegerStringSchema(POSTGRES_BIGINT_MAX, 'muxed_id');
+
 @Controller('payments')
 export class PaymentsController {
   constructor(private readonly payments: PaymentsService) {}
@@ -35,6 +37,7 @@ export class PaymentsController {
     if (!linkId || !muxedId || !payer) {
       throw new BadRequestException('linkId, muxed_id, and payer are all required');
     }
+    this.validateMuxedId(muxedId);
     return this.payments.prepareTx(linkId, muxedId, payer);
   }
 
@@ -54,7 +57,14 @@ export class PaymentsController {
     if (!linkId || !muxedId) {
       throw new BadRequestException('linkId and muxed_id are both required');
     }
+    this.validateMuxedId(muxedId);
     return this.payments.buildPayUri(linkId, muxedId);
+  }
+
+  private validateMuxedId(muxedId: string): void {
+    if (!muxedIdSchema.safeParse(muxedId).success) {
+      throw new BadRequestException('muxed_id must fit in a non-negative signed 64-bit integer');
+    }
   }
 
   // Merchant-scoped by session, never by a Stellar address in the URL. The
