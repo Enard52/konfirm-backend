@@ -113,6 +113,18 @@ the poll interval (default 3s) times a large margin, the reconciler isn't runnin
   permanently skips real transactions. `set-cursor` is for deliberate replay/recovery, documented as
   such in the code, not a routine unstick command.
 
+## Accepted dependency advisories (reconciler)
+
+`cd reconciler && cargo audit` is expected to report exactly one accepted item after a plain
+`cargo update`: `h2 0.3.27` (and `rustls-pemfile 1.0.4`), pulled in transitively by
+`soroban-client 0.6.0` via its older `reqwest 0.11` / `hyper 0.14` stack. `soroban-client` 0.6.0 is
+the only published version, so there is no fix available from this repo.
+
+- Confirm with `cargo tree -i h2@0.3.27`.
+- Tracked upstream: re-check `cargo info soroban-client` on each weekly review; once a release moves
+  off `reqwest 0.11` / `hyper 0.14`, bump it and remove this entry.
+- Anything else `cargo audit` reports is a real gap: run `cargo update` first.
+
 ## Weekly review
 
 There's no real dashboard yet — no Sentry project, no APM. Until there is, this is manual:
