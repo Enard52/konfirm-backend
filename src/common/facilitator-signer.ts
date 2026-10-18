@@ -39,7 +39,8 @@ async function resolveFacilitatorSecretKey(): Promise<string | null> {
 
 // Fails at boot if two of the three hot identities resolve to the same
 // account. Only checked when the secrets are actually present; a missing
-// one is caught by the resolution above.
+// one is caught by the resolution above. A KMS-backed facilitator has no
+// secret here to compare; see assertKmsFacilitatorIsSeparate below.
 export function assertSeparateHotKeys(env: NodeJS.ProcessEnv = process.env): void {
   const accounts: Array<[string, string]> = [];
   const add = (label: string, secret: string | undefined) => {
@@ -62,6 +63,35 @@ export function assertSeparateHotKeys(env: NodeJS.ProcessEnv = process.env): voi
   }
 }
 
+// The KMS path never has a facilitator secret in env, so assertSeparateHotKeys
+// can't see it. Once the KMS signer has derived its address, compare that
+// address against every deployer / platform-fee identity that is configured,
+// whether as a secret key or as a public address. Same "only when present"
+// rule as above.
+export function assertKmsFacilitatorIsSeparate(facilitatorAddress: string, env: NodeJS.ProcessEnv = process.env): void {
+  const others: Array<[string, string]> = [];
+  const addSecret = (label: string, secret: string | undefined) => {
+    if (!secret) return;
+    try {
+      others.push([label, Keypair.fromSecret(secret).publicKey()]);
+    } catch {
+      throw new Error(`${label} is not a valid Stellar secret key`);
+    }
+  };
+  const addAddress = (label: string, address: string | undefined) => {
+    if (address) others.push([label, address]);
+  };
+  addSecret('STELLAR_DEPLOYER_SECRET_KEY', env.STELLAR_DEPLOYER_SECRET_KEY);
+  addAddress('DEPLOYER_ADDRESS', env.DEPLOYER_ADDRESS);
+  addSecret('PLATFORM_FEE_SECRET_KEY', env.PLATFORM_FEE_SECRET_KEY);
+  addAddress('PLATFORM_FEE_ADDRESS', env.PLATFORM_FEE_ADDRESS);
+  for (const [label, address] of others) {
+    if (address === facilitatorAddress) {
+      throw new Error(`FACILITATOR_KMS_KEY_ID and ${label} are the same account — each hot identity needs its own key`);
+    }
+  }
+}
+
 let signerPromise: Promise<Ed25519Signer> | null = null;
 
 // Ships dark: FACILITATOR_KMS_KEY_ID unset means byte-for-byte the same
@@ -76,7 +106,10 @@ export function getFacilitatorSigner(): Promise<Ed25519Signer> {
   if (!signerPromise) {
     const kmsKeyId = process.env.FACILITATOR_KMS_KEY_ID;
     signerPromise = kmsKeyId
-      ? createKmsEd25519Signer(kmsKeyId)
+      ? createKmsEd25519Signer(kmsKeyId).then((signer) => {
+          assertKmsFacilitatorIsSeparate(signer.address);
+          return signer;
+        })
       : resolveFacilitatorSecretKey().then((secretKey) => {
           if (!secretKey) throw new Error('no facilitator key configured');
           assertSeparateHotKeys();

@@ -7,12 +7,28 @@
 
 const STROOPS_PER_UNIT = 10_000_000n;
 
+// Non-negative only. No caller has a reason to pass a negative amount, and
+// the split-on-'.' arithmetic below would get the sign wrong on the fraction
+// ('-5.5' would come out as -4.5), so a signed or malformed string throws
+// instead of returning a wrong number. This decision is recorded in
+// money-rules/vectors.json under "rejected_inputs".
+// Forms that already worked ('.05', '5.', surrounding whitespace from an env
+// var) are still accepted. Digits past the seventh decimal are truncated.
+const DECIMAL_PATTERN = /^(\d+(\.\d*)?|\.\d+)$/;
+
 export function toStroops(decimal: string): bigint {
-  const [whole, frac = ''] = decimal.split('.');
+  const value = decimal.trim();
+  if (!DECIMAL_PATTERN.test(value)) {
+    throw new RangeError(`not a non-negative decimal amount: ${JSON.stringify(decimal)}`);
+  }
+  const [whole, frac = ''] = value.split('.');
   return BigInt(whole) * STROOPS_PER_UNIT + BigInt((frac + '0000000').slice(0, 7));
 }
 
 export function fromStroops(stroops: bigint): string {
+  if (stroops < 0n) {
+    throw new RangeError(`negative stroop amount: ${stroops}`);
+  }
   const whole = stroops / STROOPS_PER_UNIT;
   const frac = (stroops % STROOPS_PER_UNIT).toString().padStart(7, '0');
   return `${whole}.${frac}`;

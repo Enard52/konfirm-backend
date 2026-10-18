@@ -18,5 +18,15 @@
     { "name": "EURC precision boundary is asset independent", "asset": "EURC", "amount": "0.03", "bps": 3333, "floor": "0", "fee": "0.0099990" },
     { "name": "fee one stroop below floor", "amount": "4.9999999", "bps": 100, "floor": "0.05", "fee": "0.0500000" },
     { "name": "fee one stroop above floor", "amount": "5.0001", "bps": 100, "floor": "0.05", "fee": "0.0500010" }
+  ],
+  "_rejected_inputs_comment": "Amounts and floors are never negative. The backend's toStroops() throws on any of these rather than computing a fee (a signed decimal used to come out with the wrong magnitude, e.g. -5.5 as -4.5). No production path passes them; links.controller.ts and fees.controller.ts already reject them at the API boundary. The reconciler only reads the vectors array above.",
+  "rejected_inputs": [
+    { "name": "negative amount", "amount": "-5.5", "bps": 100, "floor": "0" },
+    { "name": "negative whole amount", "amount": "-1", "bps": 100, "floor": "0" },
+    { "name": "negative zero amount", "amount": "-0", "bps": 100, "floor": "0" },
+    { "name": "negative floor", "amount": "10", "bps": 100, "floor": "-0.05" },
+    { "name": "sign inside the fraction", "amount": "5.-5", "bps": 100, "floor": "0" },
+    { "name": "explicit plus sign", "amount": "+5", "bps": 100, "floor": "0" },
+    { "name": "empty amount", "amount": "", "bps": 100, "floor": "0" }
   ]
 }
