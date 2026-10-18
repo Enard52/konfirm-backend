@@ -4,6 +4,14 @@ import * as jwt from 'jsonwebtoken';
 import { pool } from '../db/pool';
 import { AdminAuthService } from './admin-auth.service';
 
+// Passthrough: the real bcrypt still runs, but compare() calls can be counted.
+// A jest.spyOn wouldn't reach the service, since esModuleInterop gives each
+// importing module its own copy of the namespace.
+jest.mock('bcryptjs', () => {
+  const actual = jest.requireActual<typeof import('bcryptjs')>('bcryptjs');
+  return { ...actual, compare: jest.fn(actual.compare) };
+});
+
 // Hits the real konfirm_test Postgres database (see test/env.ts), same
 // no-mocks approach as auth.service.spec.ts. AdminAuthService has no
 // signup() by design (see admin-auth.controller.ts) — this suite inserts
@@ -76,6 +84,25 @@ describe('AdminAuthService (integration, real Postgres)', () => {
 
     expect(wrongPasswordMessage).not.toBe('');
     expect(wrongPasswordMessage).toBe(nonexistentEmailMessage);
+  });
+
+  it('does the same bcrypt work for a nonexistent email as for a wrong password — no timing-based enumeration', async () => {
+    const email = freshAdminEmail();
+    await createAdmin(email, 'the-real-password', 'Timing Test');
+    const compare = jest.mocked(bcrypt.compare);
+
+    compare.mockClear();
+    await expect(adminAuth.login(email, 'not-the-real-password')).rejects.toThrow('invalid email or password');
+    const wrongPasswordCompares = compare.mock.calls.length;
+
+    compare.mockClear();
+    await expect(adminAuth.login(`no-such-admin-${Date.now()}@example.com`, 'not-the-real-password')).rejects.toThrow(
+      'invalid email or password',
+    );
+    const nonexistentEmailCompares = compare.mock.calls.length;
+
+    expect(wrongPasswordCompares).toBe(1);
+    expect(nonexistentEmailCompares).toBe(wrongPasswordCompares);
   });
 
   it('rejects a token signed with a different secret (admin tokens are not merchant tokens)', () => {

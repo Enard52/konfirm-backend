@@ -10,9 +10,12 @@ const SPEND_GUARD_LOCK_KEY = 402_005;
 // acceptable is an operational/business call, not something to bake into
 // code. Deliberately no fallback that silently disables the cap (an unset
 // env var defaults to a conservative $0, meaning "not configured" fails
-// closed too, consistent with everything else in this guard).
+// closed too, consistent with everything else in this guard). A malformed
+// value (e.g. "100usd") fails closed the same way: Number() would give NaN,
+// and `spent + amount > NaN` is always false, silently disabling the cap.
 function dailyCapUsdc(): number {
-  return Number(process.env.FACILITATOR_DAILY_SPEND_CAP_USDC ?? '0');
+  const cap = Number(process.env.FACILITATOR_DAILY_SPEND_CAP_USDC ?? '0');
+  return Number.isFinite(cap) && cap >= 0 ? cap : 0;
 }
 
 export class FacilitatorSpendCapExceeded extends Error {}
@@ -56,21 +59,10 @@ export class FacilitatorSpendGuardService {
       if (halted) {
         throw new FacilitatorHalted(
           `facilitator signing is halted (since ${halted.value}) pending manual review -- ` +
-    try {
-      await client.query('BEGIN');
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('facilitator-spend-guard'))");
-      const halted = await client.query<{ value: string }>('SELECT value FROM facilitator_state WHERE key = $1', [HALT_KEY]);
-      if (halted.rows[0]) {
-        await client.query('ROLLBACK');
-        throw new FacilitatorHalted(
-          `facilitator signing is halted (since ${halted.rows[0].value}) pending manual review -- ` +
             'see GET /admin/facilitator/status, resume via POST /admin/facilitator/resume',
         );
       }
 
-      const spendResult = await client.query<{ total: string }>(
-        `SELECT COALESCE(SUM(amount_usdc), 0) AS total FROM facilitator_spend_log WHERE created_at >= date_trunc('day', NOW())`,
-      );
       const spentToday = Number(spendResult.rows[0].total);
       const cap = dailyCapUsdc();
       if (spentToday + amountUsdc > cap) {
@@ -81,11 +73,6 @@ export class FacilitatorSpendGuardService {
         );
         await client.query('COMMIT');
         transactionOpen = false;
-          `daily cap exceeded: attempted $${amountUsdc} (${operation}${reference ? ` ${reference}` : ''}) ` +
-            `with $${spentToday} already spent today against a $${cap} cap`,
-          client,
-        );
-        await client.query('COMMIT');
         throw new FacilitatorSpendCapExceeded(
           `signing this $${amountUsdc} ${operation} would exceed the daily cap of $${cap} ` +
             `($${spentToday} already spent today) -- halting further signing pending manual review`,

@@ -13,6 +13,12 @@ const ADMIN_JWT_SECRET = resolveSessionSecret('ADMIN_JWT_SECRET', 'dev-only-inse
 // gets a shorter-lived token, not the same default.
 const TOKEN_TTL = '12h';
 
+// Compared against when an email has no admin row, so a login for an unknown
+// address costs the same bcrypt work as a wrong password for a real one.
+// Without it the response time reveals which emails are admins. Same cost
+// (10) as db/seed-admin.ts, so both paths take as long.
+const DUMMY_ADMIN_PASSWORD_HASH = bcrypt.hashSync('timing-equaliser-not-a-real-admin-password', 10);
+
 export interface AdminClaims {
   id: string;
   email: string;
@@ -32,7 +38,10 @@ export class AdminAuthService {
     // Same generic error whether the email doesn't exist or the password is
     // wrong, same reasoning as auth.service.ts.
     const invalid = () => new UnauthorizedException('invalid email or password');
-    if (rows.length === 0) throw invalid();
+    if (rows.length === 0) {
+      await bcrypt.compare(password, DUMMY_ADMIN_PASSWORD_HASH);
+      throw invalid();
+    }
 
     const row = rows[0];
     const ok = await bcrypt.compare(password, row.password_hash);
