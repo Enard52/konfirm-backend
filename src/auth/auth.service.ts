@@ -83,10 +83,37 @@ export class AuthService {
     // An invalid/mistyped referral code should never block signup — it's a
     // growth mechanism, not a security gate. Looked up before the INSERT so
     // a bad code costs nothing (no wasted account row) if it doesn't exist.
+    //
+    // Self-referral guard: if the referrer's stellar_base_address matches
+    // the address being signed up with, we treat the code as if it didn't
+    // exist.  This is the primary correlation signal available at signup
+    // time — the same Stellar address can't operate two independent
+    // businesses, so a match is conclusive evidence that both accounts are
+    // controlled by the same party.  We drop the code silently rather than
+    // rejecting signup: an attacker learns nothing useful (the code "worked"
+    // from their perspective — they just don't earn a reward from it), and
+    // a legitimate merchant who accidentally typed their own code isn't
+    // hard-blocked from creating an account.
     let referrerId: string | null = null;
     if (referralCode) {
-      const referrer = await pool.query('SELECT id FROM merchants WHERE referral_code = $1', [referralCode.toUpperCase()]);
-      referrerId = referrer.rows[0]?.id ?? null;
+      const referrer = await pool.query(
+        'SELECT id, stellar_base_address FROM merchants WHERE referral_code = $1',
+        [referralCode.toUpperCase()],
+      );
+      const referrerRow = referrer.rows[0];
+      if (referrerRow) {
+        const sameAddress =
+          stellarBaseAddress &&
+          referrerRow.stellar_base_address &&
+          referrerRow.stellar_base_address === stellarBaseAddress;
+        if (sameAddress) {
+          this.logger.warn(
+            `self-referral attempt blocked at signup: address ${stellarBaseAddress} used code belonging to merchant ${referrerRow.id}`,
+          );
+        } else {
+          referrerId = referrerRow.id;
+        }
+      }
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
